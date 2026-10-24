@@ -3,21 +3,27 @@
 Gaussian-splat training dataset, in room coordinates (floor y=0, walls on X/Z,
 the same frame as bundle_to_room.py and the viewer).
 
-usage: bundle_to_dataset.py <session-bundle> [--room N] -o <out> [--max-blur 4] [--text]
+usage: bundle_to_dataset.py <session-bundle> [--room N] -o <out> [--max-blur 4] [--no-frames] [--text]
 
 Writes (out must not exist):
   images/NNNN.jpg          the app's photos, sensor pixels untouched (EXIF stripped,
                            so no tool rotates them away from their intrinsics)
+  images/fNNNNN.jpg        the 640 px color image of each LiDAR depth frame (up to 5 a second
+                           while scanning): ten times the viewpoints of the photos, which is
+                           what keeps a splat from smearing between photos
   sparse/0/*.bin           COLMAP model (--text for .txt): PINHOLE camera per photo, ARKit poses (no
                            structure-from-motion), LiDAR seed points with per-photo
                            visibility tracks (gsplat's depth loss uses these)
   points3D.ply             the seed points (with normals), for trainers that take a PLY
   transforms.json          Nerfstudio-style poses (OpenGL camera convention)
-  metadata.json            room layout, per-photo exposure/blur, held-out split
+  metadata.json            room layout, per-image exposure/blur, held-out split
+  test_images.txt          the held-out images (read by patch_trainer.py's split patch)
 
 Photos with limited tracking or more than --max-blur px of predicted motion blur
-(measured at 1920 px wide) are skipped. Every 8th kept photo (index % 8 == 0) is
-the held-out set, matching gsplat's --test_every 8.
+(measured at 1920 px wide) are skipped, and depth frames over FRAME_MAX_BLUR. Every
+8th kept photo is held out for scoring; depth frames always train. Depth frames also add
+their confident LiDAR depth, back-projected, to the seed points: dense metric depth
+targets for the views they came from.
 """
 import argparse
 import json
@@ -26,6 +32,7 @@ import os
 from pathlib import Path
 import struct
 import sys
+import zlib
 
 import numpy as np
 from PIL import Image
@@ -36,6 +43,9 @@ from plyio import read_vertices, write_points  # noqa: E402
 
 ARKIT_TO_CV = np.diag([1.0, -1.0, -1.0, 1.0])  # camera: +y up/-z forward → +y down/+z forward
 HELD_OUT_EVERY = 8
+FRAME_DEPTH_STEP = 8       # px between depth samples taken from a 256x192 LiDAR frame
+FRAME_MAX_DEPTH = 4.0      # m: LiDAR beyond this is noisy
+FRAME_MAX_BLUR = 3.0       # px of predicted motion blur at the depth frame's 640 px (about 9 at 1920)
 
 
 def mat(cm):
@@ -98,7 +108,7 @@ def pick_room(manifest, room):
     return rooms[0]['index']
 
 
-def seed_points(ply, w2r, voxel, max_points):
+def mesh_points(ply, w2r):
     v = read_vertices(ply)
     keep = v['inroom'] > 0 if 'inroom' in v.dtype.names else np.ones(len(v), bool)
     xyz = np.stack([v['x'], v['y'], v['z']], 1)[keep].astype(np.float64)
@@ -107,11 +117,74 @@ def seed_points(ply, w2r, voxel, max_points):
         normals = np.stack([v['nx'], v['ny'], v['nz']], 1)[keep].astype(np.float64) @ w2r[:3, :3].T
     else:
         normals = np.zeros_like(xyz)
+    return xyz, normals
+
+
+def seed_points(xyz, normals, voxel, max_points):
+    """one point per voxel (the first one: mesh vertices come before depth samples)"""
     _, first = np.unique(np.floor(xyz / voxel).astype(np.int64), axis=0, return_index=True)
     first.sort()
     if len(first) > max_points:
         first = np.sort(np.random.default_rng(0).choice(first, max_points, replace=False))
     return xyz[first], normals[first]
+
+
+def depth_frames(bundle, room):
+    """the room's depth frames that have a color image"""
+    path = bundle / 'depth/frames.json'
+    if not path.is_file():
+        return []
+    frames = [f for f in json.loads(path.read_text()) if f.get('room') == room and f.get('rgb')]
+    return [f for f in frames if (bundle / f['rgb']).is_file() and (bundle / f['file']).is_file()]
+
+
+def frame_blur(frames, i):
+    """Predicted motion blur (px, at the color image's size) of frame i: the app's photo formula,
+    focal length x shutter x (turn rate + half the move rate), at the slower of its neighbours."""
+    f = frames[i]
+    a, rates = mat(f['transform']), []
+    for g in frames[max(0, i - 1):i] + frames[i + 1:i + 2]:
+        dt = abs(g['timestamp'] - f['timestamp'])
+        if 0 < dt <= 0.6:
+            b = mat(g['transform'])
+            turn = math.acos(min(1.0, max(-1.0, (np.trace(a[:3, :3].T @ b[:3, :3]) - 1) / 2)))
+            rates.append((turn + np.linalg.norm(a[:3, 3] - b[:3, 3]) / 2) / dt)
+    shutter = (f.get('camera') or {}).get('shutter') or 1 / 60
+    return intrinsics(f['rgbIntrinsics'])[0] * shutter * min(rates) if rates else 0.0
+
+
+def frame_depth_points(bundle, f, w2r):
+    """confident LiDAR depth of one frame on a sparse pixel grid, in room space, with normals
+    from the depth image's neighbouring pixels (turned to face the camera)"""
+    w, h = f['width'], f['height']
+    raw = (bundle / f['file']).read_bytes()
+    if f['file'].endswith('.f16z'):
+        raw = zlib.decompress(raw, -15)
+    depth = np.frombuffer(raw, '<f2').astype(np.float32).reshape(h, w)
+    conf_path = bundle / f['confidence'] if f.get('confidence') else None
+    if conf_path is not None and conf_path.is_file():
+        conf = np.fromfile(conf_path, np.uint8).reshape(h, w)
+    else:
+        conf = np.full((h, w), 2, np.uint8)
+    fx, fy, cx, cy = intrinsics(f['intrinsics'])
+    gy, gx = np.mgrid[0:h, 0:w]
+    with np.errstate(invalid='ignore'):
+        cam = np.stack([(gx - cx) * depth / fx, (gy - cy) * depth / fy, depth], -1)  # OpenCV camera
+    ys, xs = np.mgrid[FRAME_DEPTH_STEP // 2:h - 2:FRAME_DEPTH_STEP, FRAME_DEPTH_STEP // 2:w - 2:FRAME_DEPTH_STEP]
+    z = depth[ys, xs]
+    ok = (conf[ys, xs] >= 2) & np.isfinite(z) & (z > 0.1) & (z < FRAME_MAX_DEPTH)
+    # flat here (no normals across edges or corners): neighbours close, and depth changing linearly
+    for before, after in ((depth[ys, xs - 2], depth[ys, xs + 2]), (depth[ys - 2, xs], depth[ys + 2, xs])):
+        with np.errstate(invalid='ignore'):
+            ok &= np.isfinite(before) & np.isfinite(after) & (np.abs(after - z) < 0.05 * z)
+            ok &= np.abs(before + after - 2 * z) < 0.01 * z
+    xs, ys = xs[ok], ys[ok]
+    p = cam[ys, xs]
+    n = np.cross(cam[ys, xs + 2] - p, cam[ys + 2, xs] - p)
+    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
+    n = np.where((np.einsum('ij,ij->i', n, p) > 0)[:, None], -n, n)
+    c2w = w2r @ mat(f['transform']) @ ARKIT_TO_CV
+    return p @ c2w[:3, :3].T + c2w[:3, 3], n @ c2w[:3, :3].T
 
 
 def visible(w2c, k, w, h, pts):
@@ -182,7 +255,8 @@ def write_colmap_text(sparse, cams, images, xyz, rgb, tracks):
             f.write(f'{pid + 1} {nums(xyz[pid])} {" ".join(map(str, rgb[pid]))} 0 {track}\n')
 
 
-def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, track_cap=4000, binary=True):
+def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, track_cap=4000, binary=True,
+          use_frames=True):
     bundle, out = Path(bundle), Path(out)
     if out.exists():
         raise ValueError('output directory already exists; choose a new one')
@@ -213,7 +287,37 @@ def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, 
     ply = bundle / ((rec.get('mesh') or {}).get('file') or f'mesh/room-{room}.ply')
     if not ply.is_file():
         raise ValueError(f'room {room} has no LiDAR mesh ({ply.name})')
-    xyz, normals = seed_points(ply, w2r, voxel, max_points)
+    xyz, normals = mesh_points(ply, w2r)
+
+    frames_kept = []
+    if use_frames:
+        candidates = sorted(depth_frames(bundle, room), key=lambda f: f['timestamp'])
+        for i, f in enumerate(candidates):
+            f = {**f, 'blurPixels': frame_blur(candidates, i)}
+            if f['blurPixels'] > FRAME_MAX_BLUR:
+                skipped.append({'file': f['rgb'], 'reason': f'blur {f["blurPixels"]:.1f}px (depth frame)'})
+            else:
+                frames_kept.append(f)
+        if candidates and len(xyz):
+            # every frame's depth (motion blur barely affects LiDAR), inside the scanned room
+            # (mesh bounds plus a margin), not through doorways
+            lo, hi = xyz.min(0) - 0.25, xyz.max(0) + 0.25
+            samples = [frame_depth_points(bundle, f, w2r) for f in candidates]
+            extra, extra_n = np.concatenate([s[0] for s in samples]), np.concatenate([s[1] for s in samples])
+            inside = np.all((extra >= lo) & (extra <= hi), 1)
+            xyz, normals = np.concatenate([xyz, extra[inside]]), np.concatenate([normals, extra_n[inside]])
+    xyz, normals = seed_points(xyz, normals, voxel, max_points)
+
+    # one list of training views: photos (full resolution, scored) then depth frames (640 px)
+    views = [{'name': f'{i:04d}.jpg', 'file': p['file'], 'width': p['width'], 'height': p['height'],
+              'k': intrinsics(p['intrinsics']), 'transform': p['transform'], 'blur': p.get('blurPixels'),
+              'camera': p.get('camera') or {}, 'heldOut': i % HELD_OUT_EVERY == 0, 'photo': p}
+             for i, p in enumerate(kept)]
+    for i, f in enumerate(frames_kept):
+        size = Image.open(bundle / f['rgb']).size
+        views.append({'name': f'f{i:05d}.jpg', 'file': f['rgb'], 'width': size[0], 'height': size[1],
+                      'k': intrinsics(f['rgbIntrinsics']), 'transform': f['transform'], 'blur': f['blurPixels'],
+                      'camera': f.get('camera') or {}, 'heldOut': False, 'photo': None})
 
     (out / 'images').mkdir(parents=True)
     cams, images, frames, meta = [], [], [], []
@@ -221,45 +325,45 @@ def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, 
     best_img = np.full(len(xyz), -1)
     best_uv = np.zeros((len(xyz), 2))
     per_image = []
-    for i, p in enumerate(kept):
-        name = f'{i:04d}.jpg'
-        (out / 'images' / name).write_bytes(strip_exif((bundle / p['file']).read_bytes()))
-        k = intrinsics(p['intrinsics'])
-        c2w = w2r @ mat(p['transform'])  # room space, ARKit (OpenGL) camera axes
+    for i, vw in enumerate(views):
+        name, k, w, h = vw['name'], vw['k'], vw['width'], vw['height']
+        (out / 'images' / name).write_bytes(strip_exif((bundle / vw['file']).read_bytes()))
+        c2w = w2r @ mat(vw['transform'])  # room space, ARKit (OpenGL) camera axes
         w2c = np.linalg.inv(c2w @ ARKIT_TO_CV)
-        idx, u, v, z = visible(w2c, k, p['width'], p['height'], xyz)
+        idx, u, v, z = visible(w2c, k, w, h, xyz)
         cam = c2w[:3, 3]
         view = cam - xyz[idx]
         facing = np.einsum('ij,ij->i', normals[idx], view / np.linalg.norm(view, axis=1, keepdims=True))
         facing = np.where(np.linalg.norm(normals[idx], axis=1) > 0, facing, 0.5)
-        score = np.where(facing > 0.2, facing / z / (1 + (p.get('blurPixels') or 0)), -np.inf)
+        # seed colors prefer close, head-on, sharp, high-resolution views
+        score = np.where(facing > 0.2, facing / z / (1 + (vw['blur'] or 0)) * min(1.0, w / 1920), -np.inf)
         better = score > best[idx]
         best[idx[better]], best_img[idx[better]] = score[better], i
         best_uv[idx[better]] = np.stack([u[better], v[better]], 1)
         per_image.append((idx, u, v))
-        cams.append((p['width'], p['height'], k))
+        cams.append((w, h, k))
         images.append({'name': name, 'q': qvec(w2c[:3, :3]), 't': w2c[:3, 3]})
-        frames.append({'file_path': f'images/{name}', 'w': p['width'], 'h': p['height'],
+        frames.append({'file_path': f'images/{name}', 'w': w, 'h': h,
                        'fl_x': k[0], 'fl_y': k[1], 'cx': k[2], 'cy': k[3],
                        'transform_matrix': c2w.tolist()})
-        cs = p.get('camera') or {}
-        meta.append({'name': name, 'source': p['file'], 'heldOut': i % HELD_OUT_EVERY == 0,
+        cs, p = vw['camera'], vw['photo'] or {}
+        meta.append({'name': name, 'source': vw['file'], 'heldOut': vw['heldOut'], 'depthFrame': vw['photo'] is None,
                      'exposure': p.get('exposure'), 'iso': cs.get('iso'), 'shutter': cs.get('shutter'),
-                     'exposureOffset': cs.get('exposureOffset'), 'blurPixels': p.get('blurPixels'),
+                     'exposureOffset': cs.get('exposureOffset'), 'blurPixels': vw['blur'],
                      'highRes': bool(p.get('highRes')), 'manual': bool(p.get('manual')), 'mask': None,
                      # room → OpenCV camera and pixels, for the QC/review pass
-                     'w2c': w2c.reshape(-1).tolist(), 'k': list(k), 'size': [p['width'], p['height']]})
+                     'w2c': w2c.reshape(-1).tolist(), 'k': list(k), 'size': [w, h]})
 
     # Seed colors from each point's best photo; points no photo sees well are dropped.
     seen = np.nonzero(best_img >= 0)[0]
     remap = np.full(len(xyz), -1)
     remap[seen] = np.arange(len(seen))
     rgb = np.zeros((len(seen), 3), np.uint8)
-    for i, p in enumerate(kept):
+    for i, vw in enumerate(views):
         mine = seen[best_img[seen] == i]
         if len(mine):
             pixels = np.asarray(Image.open(out / 'images' / images[i]['name']).convert('RGB'))
-            uv = np.clip(best_uv[mine].astype(int), 0, [p['width'] - 1, p['height'] - 1])
+            uv = np.clip(best_uv[mine].astype(int), 0, [vw['width'] - 1, vw['height'] - 1])
             rgb[remap[mine]] = pixels[uv[:, 1], uv[:, 0]]
     xyz, normals = xyz[seen], normals[seen]
 
@@ -284,6 +388,7 @@ def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, 
                 'worldToRoom': layout['transform']['worldToRoom'], 'layout': layout,
                 'images': meta, 'skipped': skipped}
     (out / 'metadata.json').write_text(json.dumps(metadata, indent=1))
+    (out / 'test_images.txt').write_text(''.join(m['name'] + '\n' for m in meta if m['heldOut']))
     return metadata
 
 
@@ -296,11 +401,14 @@ def main():
     ap.add_argument('--voxel', type=float, default=0.01, help='seed point spacing (m)')
     ap.add_argument('--max-points', type=int, default=300_000)
     ap.add_argument('--text', action='store_true', help='write the COLMAP model as text instead of .bin')
+    ap.add_argument('--no-frames', action='store_true', help="photos only: leave out the depth frames' images and depth")
     a = ap.parse_args()
-    m = build(a.bundle, a.out, a.room, a.max_blur, a.voxel, a.max_points, binary=not a.text)
+    m = build(a.bundle, a.out, a.room, a.max_blur, a.voxel, a.max_points, binary=not a.text,
+              use_frames=not a.no_frames)
     held = sum(i['heldOut'] for i in m['images'])
-    print(f'room {m["room"]} {m["roomName"] or ""}: {len(m["images"])} photos ({held} held out), '
-          f'{len(m["skipped"])} skipped, {m["points"]} seed points -> {a.out}')
+    frames = sum(i['depthFrame'] for i in m['images'])
+    print(f'room {m["room"]} {m["roomName"] or ""}: {len(m["images"]) - frames} photos ({held} held out), '
+          f'{frames} depth frames, {len(m["skipped"])} skipped, {m["points"]} seed points -> {a.out}')
 
 
 if __name__ == '__main__':

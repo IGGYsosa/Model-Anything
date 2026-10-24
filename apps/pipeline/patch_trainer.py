@@ -1,4 +1,4 @@
-"""Two small fixes to gsplat's example trainer and its COLMAP loader. Safe to run again.
+"""Small fixes to gsplat's example trainer and its COLMAP loader. Safe to run again.
 
 1. pycolmap (rmbrualla fork): reads/writes COLMAP .bin counts as a C `long` ('L'), 8 bytes on
    Linux but 4 on Windows, where every .bin file fails to load. COLMAP stores them as uint64.
@@ -9,6 +9,12 @@
    1/0 where a LiDAR point has nothing rendered yet; the forward pass hides it, but the backward
    pass turns 0 * inf into NaN and the run diverges within ~100 steps (seen on a real room scan).
    Clamp before dividing.
+4. examples/simple_trainer.py eval(): its DataLoader starts a fresh worker process after training,
+   which on Windows hung indefinitely (no output, no CPU) with the trained splat already saved.
+   The held-out set is a handful of photos; load them in the main process.
+5. examples/datasets/colmap.py Dataset: holds out every 8th image by sorted name. Our datasets
+   mix scored photos with depth-frame images, and only photos are held out, so read the
+   held-out names from <data_dir>/test_images.txt when bundle_to_dataset.py wrote one.
 
 usage: python patch_trainer.py <gsplat>/examples   (with the trainer's Python)
 setup_native.ps1 and the Dockerfile run it.
@@ -39,4 +45,16 @@ patch(Path(sys.argv[1]) / 'lib_bilagrid.py', [
      '                return img  # no color fit (e.g. a nearly uniform photo): leave it uncorrected\n')])
 patch(Path(sys.argv[1]) / 'simple_trainer.py', [
     ('disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))',
-     'disp = torch.where(depths > 0.0, 1.0 / depths.clamp_min(1e-6), torch.zeros_like(depths))')])
+     'disp = torch.where(depths > 0.0, 1.0 / depths.clamp_min(1e-6), torch.zeros_like(depths))'),
+    ('self.valset, batch_size=1, shuffle=False, num_workers=1', 'self.valset, batch_size=1, shuffle=False, num_workers=0')])
+patch(Path(sys.argv[1]) / 'datasets' / 'colmap.py', [
+    ('        indices = np.arange(len(self.parser.image_names))\n'
+     '        if split == "train":\n',
+     '        indices = np.arange(len(self.parser.image_names))\n'
+     '        held_file = os.path.join(self.parser.data_dir, "test_images.txt")\n'
+     '        if os.path.exists(held_file):  # explicit held-out list (model-anything datasets)\n'
+     '            with open(held_file) as f:\n'
+     '                held = set(f.read().split())\n'
+     '            test = np.array([name in held for name in self.parser.image_names], bool)\n'
+     '            self.indices = indices[test] if split != "train" else indices[~test]\n'
+     '        elif split == "train":\n')])

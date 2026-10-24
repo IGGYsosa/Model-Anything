@@ -2,7 +2,7 @@
 """Run one photoreal job: phone export → dataset → gsplat training → QC → scene package.
 
 usage: run_job.py <bundle.zip | session-dir> -o <job-dir> [--room N] [--preset interior|exterior]
-                  [--steps 30000] [--data-factor 1] [--splat existing.ply]
+                  [--steps 15000] [--data-factor 1] [--splat existing.ply] [--resume]
 
 The job directory gets:
   job.json       state (queued/running/done/failed), current step, metrics, hints, error
@@ -38,18 +38,22 @@ from review import review
 # gsplat simple_trainer options per preset (strategy subcommand first). MCMC densification,
 # anti-aliasing, a bilateral grid for the phone's per-photo auto exposure, and depth loss
 # against the LiDAR seed tracks. Outdoors ARKit drifts over distance, so poses are refined too.
+# cap: MCMC keeps the splat count fixed at this many Gaussians. gsplat's default (1M) needs more
+# than an 8 GB GPU has room for at full photo resolution; past that Windows pages GPU memory to
+# system RAM and each step takes minutes instead of a third of a second (seen on a real scan).
 PRESETS = {
-    'interior': {'strategy': 'mcmc', 'flags': {'antialiased': True, 'depth_loss': True,
-                                               'use_bilateral_grid': True}},
-    'exterior': {'strategy': 'mcmc', 'flags': {'antialiased': True, 'depth_loss': True,
+    # pose_opt: ARKit poses drift a few cm over a scan, enough to smear fine detail
+    'interior': {'strategy': 'mcmc', 'cap': 500_000, 'flags': {'antialiased': True, 'depth_loss': True,
+                                               'use_bilateral_grid': True, 'pose_opt': True}},
+    'exterior': {'strategy': 'mcmc', 'cap': 500_000, 'flags': {'antialiased': True, 'depth_loss': True,
                                                'use_bilateral_grid': True, 'pose_opt': True}},
 }
-QUALITY = ((26.0, 'good'), (22.0, 'fair'))
+QUALITY = ((26.0, 'good'), (22.0, 'fair'))  # held-out PSNR (dB) floors; below the last is poor
 # gsplat sizes its learning rates and depth loss from how far apart the photos were taken.
 MIN_SPREAD = 0.05     # m: photos all from one spot have no parallax and can't be trained
 TARGET_SPREAD = 0.5   # m: below this, scale gsplat's scene size up to a room-sized value
 # native (no Docker) gsplat install made by setup_native.ps1: env/ (Python 3.10) and gsplat/ (examples)
-NATIVE = Path(os.environ.get('MA_NATIVE_DIR') or Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share')) / 'ModelAnything')  # held-out PSNR (dB) floors; below the last is poor
+NATIVE = Path(os.environ.get('MA_NATIVE_DIR') or Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share')) / 'ModelAnything')
 
 
 def now():
@@ -150,15 +154,21 @@ def camera_spread(metadata):
     return float(np.linalg.norm(eyes - eyes.mean(0), axis=1).max())
 
 
+def snapshots(steps):
+    """Steps to also save the splat at, so a run that dies late still leaves a usable result."""
+    return [s for s in (7_000, 15_000) if s < steps] + [steps]
+
+
 def train_args(preset, dataset, result, steps, factor, help_text, global_scale=1.0):
     p = PRESETS[preset]
     values = {'data_dir': dataset, 'result_dir': result, 'data_factor': factor, 'test_every': 8, 'max_steps': steps,
-              'eval_steps': steps, 'save_steps': steps, 'ply_steps': steps}
+              'eval_steps': [steps], 'save_steps': [steps], 'ply_steps': snapshots(steps),
+              'strategy.cap_max': p['cap']}
     if global_scale != 1.0:
         values['global_scale'] = round(global_scale, 4)
     args = [p['strategy']]
     for name, value in values.items():
-        args += [option(name, help_text), str(value)]
+        args += [option(name, help_text), *map(str, value if isinstance(value, list) else [value])]
     # room coordinates in, room coordinates out: the splat must line up with the layout
     # no live viewer and no fly-through video (it fails on short camera paths and isn't used)
     flags = {'save_ply': True, 'disable_viewer': True, 'disable_video': True, 'normalize_world_space': False, **p['flags']}
@@ -224,9 +234,9 @@ def compress(ply, scene):
     return 'scene.ply'
 
 
-def run(source, job_dir, room=None, preset='interior', steps=30_000, factor=1, splat=None):
+def run(source, job_dir, room=None, preset='interior', steps=15_000, factor=1, splat=None, resume=False):
     job = Job(job_dir)
-    job.update(state='running', step='unpack', preset=preset, error=None)
+    job.update(state='running', step='unpack', preset=preset, error=None, trainingStopped=None)
     try:
         upload = job.root / 'upload'
         if upload.exists():
@@ -238,8 +248,9 @@ def run(source, job_dir, room=None, preset='interior', steps=30_000, factor=1, s
         if dataset.exists():
             shutil.rmtree(dataset)
         metadata = build(bundle, dataset, room)
-        job.update(room=metadata['room'], roomName=metadata['roomName'], photos=len(metadata['images']),
-                   skipped=len(metadata['skipped']), seedPoints=metadata['points'])
+        frames = sum(i.get('depthFrame', False) for i in metadata['images'])
+        job.update(room=metadata['room'], roomName=metadata['roomName'], photos=len(metadata['images']) - frames,
+                   depthFrames=frames, skipped=len(metadata['skipped']), seedPoints=metadata['points'])
 
         metrics, renders, stage = {}, None, None
         if splat:
@@ -257,23 +268,30 @@ def run(source, job_dir, room=None, preset='interior', steps=30_000, factor=1, s
             env = trainer_env(command)
             help_text = subprocess.run(command + [PRESETS[preset]['strategy'], '--help'],
                                        capture_output=True, text=True, env=env).stdout
-            log = open(job.root / 'train.log', 'w')
+            args = command + train_args(preset, dataset, result, steps, factor, help_text, max(1.0, TARGET_SPREAD / spread))
+            final = result / 'ckpts' / f'ckpt_{steps - 1}_rank0.pt'
+            if resume and final.exists():
+                # this job's training already finished (e.g. a run whose evaluation never returned):
+                # only score the saved checkpoint on the held-out photos
+                args += [option('ckpt', help_text), str(final)]
+            log = open(job.root / 'train.log', 'a' if resume else 'w')
             with log:
-                trained = subprocess.run(command + train_args(preset, dataset, result, steps, factor, help_text,
-                                                              max(1.0, TARGET_SPREAD / spread)),
-                                         stdout=log, stderr=subprocess.STDOUT, env=env)
-            if trained.returncode:
+                trained = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT, env=env)
+            plys = sorted((result / 'ply').glob('point_cloud_*.ply'), key=lambda p: int(p.stem.split('_')[-1]))
+            if trained.returncode and not plys:
                 raise RuntimeError(f'training failed (exit {trained.returncode}); see train.log')
+            if trained.returncode:
+                # keep the last snapshot; it has no held-out scores, so weak areas come from coverage
+                job.update(trainingStopped=f'exit {trained.returncode} after step {int(plys[-1].stem.split("_")[-1]) + 1}')
             stage = f'val_step{steps - 1}'  # renders: val_step299_0000.png; stats: val_step0299.json
             stats_file = result / 'stats' / f'val_step{steps - 1:04d}.json'
             stats = json.loads(stats_file.read_text()) if stats_file.exists() else {}
             metrics = {k: stats[k] for k in ('psnr', 'ssim', 'lpips', 'cc_psnr', 'cc_ssim', 'cc_lpips', 'num_GS') if k in stats}
-            plys = sorted((result / 'ply').glob('point_cloud_*.ply'), key=lambda p: int(p.stem.split('_')[-1]))
             if not plys:
                 raise RuntimeError('training produced no PLY')
             ply = plys[-1]
 
-            renders = result / 'renders'
+            renders = result / 'renders' if stats else None
             psnr = metrics.get('cc_psnr', metrics.get('psnr'))
             if psnr is not None:
                 metrics['quality'] = next((label for floor, label in QUALITY if psnr >= floor), 'poor')
@@ -312,13 +330,15 @@ def main():
     ap.add_argument('-o', '--out', required=True, help='job directory')
     ap.add_argument('--room', type=int)
     ap.add_argument('--preset', choices=sorted(PRESETS), default='interior')
-    ap.add_argument('--steps', type=int, default=30_000)
+    ap.add_argument('--steps', type=int, default=15_000)
     ap.add_argument('--data-factor', type=int, default=1, help='train on images downscaled by this factor')
     ap.add_argument('--splat', help='package this splat instead of training')
+    ap.add_argument('--resume', action='store_true',
+                    help="reuse this job's finished training (same upload and steps) and only score and package it")
     a = ap.parse_args()
     Path(a.out).mkdir(parents=True, exist_ok=True)
     try:
-        data = run(a.source, a.out, a.room, a.preset, a.steps, a.data_factor, a.splat)
+        data = run(a.source, a.out, a.room, a.preset, a.steps, a.data_factor, a.splat, a.resume)
     except Exception as error:
         sys.exit(f'job failed: {error}')
     print(json.dumps({k: data.get(k) for k in ('state', 'room', 'photos', 'metrics', 'hints', 'scene')}, indent=1))

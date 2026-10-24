@@ -6,8 +6,8 @@ Turns a room scanned with the iPhone app into a photoreal Gaussian-splat scene t
 app export (zip) → bundle_to_dataset.py → gsplat training → QC → scene/scene.json + scene.sog
 ```
 
-- **Dataset** (`bundle_to_dataset.py`): one room → COLMAP model in room coordinates (floor y=0, walls on X/Z, the frame `bundle_to_room.py` and the viewer use). Cameras come from ARKit, so there is no structure-from-motion step. LiDAR mesh vertices become seed points, colored from the photo that sees them best, with per-photo visibility tracks for depth supervision. Blurry and lost-tracking photos are skipped; every 8th photo is held out for scoring.
-- **Training** (`run_job.py`): gsplat 1.5.3 `simple_trainer.py` with MCMC densification, anti-aliasing, a bilateral grid for the phone's per-photo auto exposure, and LiDAR depth loss. `--preset exterior` adds pose refinement for drift over larger areas. World normalization is off so the splat stays aligned with the RoomPlan layout.
+- **Dataset** (`bundle_to_dataset.py`): one room → COLMAP model in room coordinates (floor y=0, walls on X/Z, the frame `bundle_to_room.py` and the viewer use). Cameras come from ARKit, so there is no structure-from-motion step. The LiDAR depth frames' 640 px color images train alongside the photos (about ten times the viewpoints, which is what stops smearing between photos; frames with more than 3 px of predicted motion blur are skipped), and every depth frame's confident LiDAR readings join the mesh vertices as seed points. Seed points are colored from the view that sees them best and carry per-view visibility tracks for depth supervision. Blurry and lost-tracking photos are skipped; every 8th photo is held out for scoring (`test_images.txt`; depth frames always train). `--no-frames` builds a photos-only dataset.
+- **Training** (`run_job.py`): gsplat 1.5.3 `simple_trainer.py` with MCMC densification, anti-aliasing, a bilateral grid for the phone's per-photo auto exposure, LiDAR depth loss and pose refinement for ARKit's drift. 15,000 steps by default (`--steps 30000` for a final keeper); the splat is also saved at 7,000 steps, so a run that dies late still packages a result, and `--resume` scores and packages a job whose training already finished. World normalization is off so the splat stays aligned with the RoomPlan layout.
 - **QC** (`review.py`): held-out PSNR/SSIM/LPIPS from gsplat and a quality label (`good` / `fair` / `poor`). Every LiDAR seed point is also scored for photo coverage and for how far held-out renders differ from the real photos there. Weak points are grouped per surface into walkable areas, each with:
   - a box
   - the side it faces
@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File apps/pipeline/setup_native.ps1
 This installs Python 3.10, PyTorch 2.4 (CUDA 12.4) and gsplat 1.5.3's prebuilt Windows wheel into `%LOCALAPPDATA%\ModelAnything`. It needs no CUDA toolkit or compiler and takes about 5 GB, plus a similar amount of uv download cache. `run_job.py` finds the install by itself.
 
 Two Windows gaps are covered by the setup:
-- `patch_trainer.py` fixes .bin loading in gsplat's COLMAP reader, and evaluation of near-uniform photos.
+- `patch_trainer.py` fixes .bin loading in gsplat's COLMAP reader, evaluation of near-uniform photos, a NaN in the depth loss, an evaluation hang on Windows, and reads the explicit held-out list.
 - `shims/fused_ssim.py` replaces a CUDA-only SSIM package.
 
 Check the install end to end on the GPU. This renders a synthetic room into photos, trains on them for about 2 minutes, and requires a held-out PSNR of at least 25 dB with the depth loss active:
