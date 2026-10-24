@@ -8,7 +8,13 @@ app export (zip) → bundle_to_dataset.py → gsplat training → QC → scene/s
 
 - **Dataset** (`bundle_to_dataset.py`): one room → COLMAP model in room coordinates (floor y=0, walls on X/Z, the frame `bundle_to_room.py` and the viewer use). Cameras come from ARKit, so there is no structure-from-motion step. LiDAR mesh vertices become seed points, colored from the photo that sees them best, with per-photo visibility tracks for depth supervision. Blurry and lost-tracking photos are skipped; every 8th photo is held out for scoring.
 - **Training** (`run_job.py`): gsplat 1.5.3 `simple_trainer.py` with MCMC densification, anti-aliasing, a bilateral grid for the phone's per-photo auto exposure, and LiDAR depth loss. `--preset exterior` adds pose refinement for drift over larger areas. World normalization is off so the splat stays aligned with the RoomPlan layout.
-- **QC**: held-out PSNR/SSIM/LPIPS from gsplat, quality `good` / `fair` / `poor`, and per-view scores. Weak views become capture hints such as "Add photos from about (1.2, -0.4) m looking toward the +X side".
+- **QC** (`review.py`): held-out PSNR/SSIM/LPIPS from gsplat and a quality label (`good` / `fair` / `poor`). Every LiDAR seed point is also scored for photo coverage and for how far held-out renders differ from the real photos there. Weak points are grouped per surface into walkable areas, each with:
+  - a box
+  - the side it faces
+  - where to stand for new photos
+  - a real-vs-render comparison
+
+  The viewer's Rescan panel shows these areas. The iPhone app's **Rescan weak spots** marks them red on the live mesh until they are photographed again.
 - **Scene package**: `scene.json` (`model-anything-scene/1`) holds the splat file name, RoomPlan layout, camera presets and metrics. The splat is compressed to `.sog` with splat-transform when it is installed, otherwise shipped as `.ply`.
 
 ## Run a job
