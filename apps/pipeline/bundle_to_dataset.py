@@ -8,7 +8,7 @@ usage: bundle_to_dataset.py <session-bundle> [--room N] -o <out> [--max-blur 4] 
 Writes (out must not exist):
   images/NNNN.jpg          the app's photos, sensor pixels untouched (EXIF stripped,
                            so no tool rotates them away from their intrinsics)
-  sparse/0/*.bin           COLMAP model: PINHOLE camera per photo, ARKit poses (no
+  sparse/0/*.bin           COLMAP model (--text for .txt): PINHOLE camera per photo, ARKit poses (no
                            structure-from-motion), LiDAR seed points with per-photo
                            visibility tracks (gsplat's depth loss uses these)
   points3D.ply             the seed points (with normals), for trainers that take a PLY
@@ -141,8 +141,13 @@ def nums(values):
     return ' '.join(repr(float(v)) for v in values)
 
 
-def write_colmap(sparse, cams, images, xyz, rgb, tracks, text):
+def write_colmap(sparse, cams, images, xyz, rgb, tracks, binary=True):
+    """COLMAP model as binary (what gsplat's loader reads; on Windows it needs
+    patch_pycolmap.py) or text (for other tools; that loader's text reader is broken)."""
     sparse.mkdir(parents=True)
+    if not binary:
+        write_colmap_text(sparse, cams, images, xyz, rgb, tracks)
+        return
     with open(sparse / 'cameras.bin', 'wb') as f:
         f.write(struct.pack('<Q', len(cams)))
         for cid, (w, h, k) in enumerate(cams, 1):
@@ -161,8 +166,9 @@ def write_colmap(sparse, cams, images, xyz, rgb, tracks, text):
             f.write(struct.pack('<Q3d3BdQ', pid + 1, *xyz[pid], *rgb[pid], 0.0, len(tracks[pid])))
             for iid, j in tracks[pid]:
                 f.write(struct.pack('<ii', iid, j))
-    if not text:
-        return
+
+
+def write_colmap_text(sparse, cams, images, xyz, rgb, tracks):
     with open(sparse / 'cameras.txt', 'w') as f:
         for cid, (w, h, k) in enumerate(cams, 1):
             f.write(f'{cid} PINHOLE {w} {h} {nums(k)}\n')
@@ -176,7 +182,7 @@ def write_colmap(sparse, cams, images, xyz, rgb, tracks, text):
             f.write(f'{pid + 1} {nums(xyz[pid])} {" ".join(map(str, rgb[pid]))} 0 {track}\n')
 
 
-def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, track_cap=4000, text=False):
+def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, track_cap=4000, binary=True):
     bundle, out = Path(bundle), Path(out)
     if out.exists():
         raise ValueError('output directory already exists; choose a new one')
@@ -269,7 +275,7 @@ def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, 
         for j, pid in enumerate(idx.tolist()):
             tracks[pid].append((i + 1, j))
 
-    write_colmap(out / 'sparse/0', cams, images, xyz, rgb, tracks, text)
+    write_colmap(out / 'sparse/0', cams, images, xyz, rgb, tracks, binary)
     write_points(out / 'points3D.ply', xyz, rgb, normals)
     (out / 'transforms.json').write_text(json.dumps({'camera_model': 'OPENCV', 'ply_file_path': 'points3D.ply',
                                                      'frames': frames}, indent=1))
@@ -289,9 +295,9 @@ def main():
     ap.add_argument('--max-blur', type=float, default=4.0, help='px of predicted blur at 1920 px wide')
     ap.add_argument('--voxel', type=float, default=0.01, help='seed point spacing (m)')
     ap.add_argument('--max-points', type=int, default=300_000)
-    ap.add_argument('--text', action='store_true', help='also write the COLMAP model as text')
+    ap.add_argument('--text', action='store_true', help='write the COLMAP model as text instead of .bin')
     a = ap.parse_args()
-    m = build(a.bundle, a.out, a.room, a.max_blur, a.voxel, a.max_points, text=a.text)
+    m = build(a.bundle, a.out, a.room, a.max_blur, a.voxel, a.max_points, binary=not a.text)
     held = sum(i['heldOut'] for i in m['images'])
     print(f'room {m["room"]} {m["roomName"] or ""}: {len(m["images"])} photos ({held} held out), '
           f'{len(m["skipped"])} skipped, {m["points"]} seed points -> {a.out}')

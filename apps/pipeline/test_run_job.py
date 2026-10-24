@@ -28,7 +28,8 @@ sys.path.insert(0, os.environ['PIPELINE_DIR'])
 from make_test_splat import synthetic_room, write_splat
 argv = sys.argv[1:]
 if '--help' in argv:
-    print('--save-ply, --no-save-ply  --disable-viewer, --no-disable-viewer  --antialiased, --no-antialiased '
+    print('--save-ply, --no-save-ply  --disable-viewer, --no-disable-viewer  --disable-video, --no-disable-video '
+          '--antialiased, --no-antialiased '
           '--depth-loss, --no-depth-loss --use-bilateral-grid, --no-use-bilateral-grid --pose-opt, --no-pose-opt '
           '--normalize-world-space, --no-normalize-world-space')
     sys.exit(0)
@@ -37,7 +38,7 @@ Path(os.environ['ARGS_OUT']).write_text(json.dumps(argv))
 result, steps, data = Path(arg('--result_dir')), int(arg('--max_steps')), Path(arg('--data_dir'))
 for d in ('stats', 'ply', 'renders'):
     (result / d).mkdir(parents=True, exist_ok=True)
-(result / 'stats' / f'val_step{steps - 1}.json').write_text(json.dumps({'psnr': 27.5, 'ssim': 0.9, 'lpips': 0.1, 'num_GS': 1000}))
+(result / 'stats' / f'val_step{steps - 1:04d}.json').write_text(json.dumps({'psnr': 27.5, 'ssim': 0.9, 'lpips': 0.1, 'num_GS': 1000}))
 xyz, rgb, scale = synthetic_room(0.2)
 write_splat(result / 'ply' / f'point_cloud_{steps - 1}.ply', xyz, rgb, scale)
 rng = np.random.default_rng(1)
@@ -83,7 +84,7 @@ class JobTests(unittest.TestCase):
         self.assertEqual(data['room'], 2)
         args = json.loads(self.args_out.read_text())
         self.assertEqual(args[0], 'mcmc')
-        for flag in ('--save-ply', '--antialiased', '--depth-loss', '--use-bilateral-grid', '--no-normalize-world-space'):
+        for flag in ('--save-ply', '--disable-video', '--antialiased', '--depth-loss', '--use-bilateral-grid', '--no-normalize-world-space'):
             self.assertIn(flag, args)
         self.assertNotIn('--pose-opt', args)
         scene = json.loads((job / 'scene/scene.json').read_text())
@@ -122,6 +123,17 @@ class JobTests(unittest.TestCase):
     def test_exterior_preset_refines_poses(self):
         run_job.run(self.zip, self.base / 'job', preset='exterior', steps=10)
         self.assertIn('--pose-opt', json.loads(self.args_out.read_text()))
+
+    def test_rejects_photos_from_one_spot(self):
+        bundle = self.base / 'one-spot'
+        photos = make_bundle(bundle)
+        for photo in photos:  # every photo from the same position, only turning
+            m = photo['transform']
+            m[12:15] = photos[0]['transform'][12:15]
+        (bundle / 'photos/photos.json').write_text(json.dumps(photos))
+        with self.assertRaisesRegex(ValueError, 'one spot'):
+            run_job.run(bundle, self.base / 'job', steps=10)
+        self.assertFalse(self.args_out.exists())
 
     def test_value_style_bools(self):
         self.assertEqual(run_job.bool_arg('pose_opt', False, '--pose_opt BOOL'), ['--pose_opt', 'False'])

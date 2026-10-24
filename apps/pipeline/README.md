@@ -17,9 +17,29 @@ app export (zip) → bundle_to_dataset.py → gsplat training → QC → scene/s
   The viewer's Rescan panel shows these areas. The iPhone app's **Rescan weak spots** marks them red on the live mesh until they are photographed again.
 - **Scene package**: `scene.json` (`model-anything-scene/1`) holds the splat file name, RoomPlan layout, camera presets and metrics. The splat is compressed to `.sog` with splat-transform when it is installed, otherwise shipped as `.ply`.
 
-## Run a job
+## Install the trainer (Windows, no Docker)
 
-On a machine with gsplat installed (`GSPLAT_DIR` pointing at its checkout, or `MA_TRAINER` set to the trainer command):
+On a Windows PC with an NVIDIA GPU, git and [uv](https://docs.astral.sh/uv/):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File apps/pipeline/setup_native.ps1
+```
+
+This installs Python 3.10, PyTorch 2.4 (CUDA 12.4) and gsplat 1.5.3's prebuilt Windows wheel into `%LOCALAPPDATA%\ModelAnything`. It needs no CUDA toolkit or compiler and takes about 5 GB, plus a similar amount of uv download cache. `run_job.py` finds the install by itself.
+
+Two Windows gaps are covered by the setup:
+- `patch_trainer.py` fixes .bin loading in gsplat's COLMAP reader, and evaluation of near-uniform photos.
+- `shims/fused_ssim.py` replaces a CUDA-only SSIM package.
+
+Check the install end to end on the GPU. This renders a synthetic room into photos, trains on them for about 2 minutes, and requires a held-out PSNR of at least 25 dB with the depth loss active:
+
+```powershell
+& "$env:LOCALAPPDATA\ModelAnything\env\Scripts\python.exe" apps/pipeline/smoke_test.py
+```
+
+Elsewhere, set `GSPLAT_DIR` to a gsplat checkout (the Docker image does) or `MA_TRAINER` to the trainer command.
+
+## Run a job
 
 ```sh
 python apps/pipeline/run_job.py patio.zip -o data/jobs/patio --preset interior
@@ -29,7 +49,7 @@ Then, with `npm run dev`, open `http://127.0.0.1:5188/?scene=/jobs/patio/scene/s
 
 Without a GPU, `--splat file.ply` packages an existing splat instead of training. `make_test_splat.py` writes one (a synthetic closed room, or one splat per seed point with `--from-points dataset/points3D.ply`).
 
-`--data-factor 2` trains on half-size photos if the GPU runs out of memory.
+`--data-factor 2` trains on half-size photos if the GPU runs out of memory. A job stops early, asking you to walk around, when the photos were all taken from one spot: without parallax there is nothing to train. gsplat sizes its learning rates from the photos' spread, so a small spread is scaled up to room size.
 
 ## Job server
 
@@ -58,7 +78,7 @@ In Git Bash on Windows, prefix the build with `MSYS_NO_PATHCONV=1`, or Git Bash 
 
 The image (`Dockerfile`) pins gsplat 1.5.3 (built for Ampere, Ada and Hopper GPUs) and splat-transform 3.10.1. Jobs are written to `data/jobs/`, which Git ignores. The same image runs on a rented cloud GPU.
 
-The first image build and first real training run have not been verified yet; `run_job.py` reads the trainer's `--help` to spell its boolean flags.
+The Docker image hasn't been built yet. The same trainer has been verified natively on Windows (RTX 3080, `smoke_test.py`). `run_job.py` reads the trainer's `--help` to spell its options.
 
 ## Tests
 

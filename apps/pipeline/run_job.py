@@ -43,7 +43,12 @@ PRESETS = {
     'exterior': {'strategy': 'mcmc', 'flags': {'antialiased': True, 'depth_loss': True,
                                                'use_bilateral_grid': True, 'pose_opt': True}},
 }
-QUALITY = ((26.0, 'good'), (22.0, 'fair'))  # held-out PSNR (dB) floors; below the last is poor
+QUALITY = ((26.0, 'good'), (22.0, 'fair'))
+# gsplat sizes its learning rates and depth loss from how far apart the photos were taken.
+MIN_SPREAD = 0.05     # m: photos all from one spot have no parallax and can't be trained
+TARGET_SPREAD = 0.5   # m: below this, scale gsplat's scene size up to a room-sized value
+# native (no Docker) gsplat install made by setup_native.ps1: env/ (Python 3.10) and gsplat/ (examples)
+NATIVE = Path(os.environ.get('MA_NATIVE_DIR') or Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share')) / 'ModelAnything')  # held-out PSNR (dB) floors; below the last is poor
 
 
 def now():
@@ -90,8 +95,21 @@ def trainer_command():
         if os.name != 'nt':
             return shlex.split(custom)
         return [part.strip('"') for part in shlex.split(custom, posix=False)]  # keep Windows backslashes
-    gsplat = Path(os.environ.get('GSPLAT_DIR', '/opt/gsplat'))
-    return [sys.executable, str(gsplat / 'examples/simple_trainer.py')]
+    if os.environ.get('GSPLAT_DIR'):  # the Docker image, or any checkout run with this Python
+        return [sys.executable, str(Path(os.environ['GSPLAT_DIR']) / 'examples/simple_trainer.py')]
+    python = NATIVE / 'env' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    if python.exists() and (NATIVE / 'gsplat').is_dir():  # setup_native.ps1
+        return [str(python), str(NATIVE / 'gsplat/examples/simple_trainer.py')]
+    return [sys.executable, '/opt/gsplat/examples/simple_trainer.py']
+
+
+def trainer_env(command):
+    """The trainer's environment: UTF-8 output, and the pure-PyTorch fused_ssim stand-in
+    (shims/) when the CUDA package isn't installed, as on native Windows."""
+    env = {**os.environ, 'PYTHONUTF8': '1'}
+    if subprocess.run([command[0], '-c', 'import fused_ssim'], capture_output=True).returncode:
+        env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(Path(__file__).parent / 'shims'), env.get('PYTHONPATH')]))
+    return env
 
 
 def bool_arg(name, value, help_text):
@@ -103,13 +121,30 @@ def bool_arg(name, value, help_text):
     return [f'--{name}', str(value)]
 
 
-def train_args(preset, dataset, result, steps, factor, help_text):
+def option(name, help_text):
+    """--data-dir or --data_dir, whichever this trainer's tyro version prints"""
+    dashed = f'--{name.replace("_", "-")}'
+    return dashed if dashed in help_text else f'--{name}'
+
+
+def camera_spread(metadata):
+    """Largest distance (m) of a photo from the photos' mean position: gsplat's scene scale."""
+    eyes = np.array([np.linalg.inv(np.array(i['w2c'], float).reshape(4, 4))[:3, 3] for i in metadata['images']])
+    return float(np.linalg.norm(eyes - eyes.mean(0), axis=1).max())
+
+
+def train_args(preset, dataset, result, steps, factor, help_text, global_scale=1.0):
     p = PRESETS[preset]
-    args = [p['strategy'], '--data_dir', str(dataset), '--result_dir', str(result),
-            '--data_factor', str(factor), '--test_every', '8', '--max_steps', str(steps),
-            '--eval_steps', str(steps), '--save_steps', str(steps), '--ply_steps', str(steps)]
+    values = {'data_dir': dataset, 'result_dir': result, 'data_factor': factor, 'test_every': 8, 'max_steps': steps,
+              'eval_steps': steps, 'save_steps': steps, 'ply_steps': steps}
+    if global_scale != 1.0:
+        values['global_scale'] = round(global_scale, 4)
+    args = [p['strategy']]
+    for name, value in values.items():
+        args += [option(name, help_text), str(value)]
     # room coordinates in, room coordinates out: the splat must line up with the layout
-    flags = {'save_ply': True, 'disable_viewer': True, 'normalize_world_space': False, **p['flags']}
+    # no live viewer and no fly-through video (it fails on short camera paths and isn't used)
+    flags = {'save_ply': True, 'disable_viewer': True, 'disable_video': True, 'normalize_world_space': False, **p['flags']}
     for name, value in flags.items():
         args += bool_arg(name, value, help_text)
     return args
@@ -145,10 +180,13 @@ def cameras(layout):
     size = float(np.max(hi - lo))
     height = max([w['height'] for w in layout['walls']] or [2.5])
     target = [round(float(center[0]), 3), round(height * 0.4, 3), round(float(center[1]), 3)]
-    # home view from just inside the far corner, above eye height: splats only look right from
-    # where the photos were taken, so the dollhouse view starts inside rather than overhead
+    # Splats look right only near where photos were taken, so the home view stands at the photo
+    # farthest from the middle (the widest captured view); without photos, inside the far corner.
     corner = hi - np.minimum(0.45, (hi - lo) * 0.15)
     orbit = [round(float(corner[0]), 3), round(min(height - 0.25, 2.0), 3), round(float(corner[1]), 3)]
+    if layout['photos']:
+        far = max(layout['photos'], key=lambda p: (p['position'][0] - center[0]) ** 2 + (p['position'][2] - center[1]) ** 2)
+        orbit = [round(float(v), 3) for v in far['position']]
     photo = layout['photos'][0] if layout['photos'] else None
     walk = [target[0], 1.6, target[2]] if not photo else [photo['position'][0], 1.6, photo['position'][2]]
     look = [walk[0] + 1, 1.5, walk[2]] if not photo else \
@@ -190,21 +228,27 @@ def run(source, job_dir, room=None, preset='interior', steps=30_000, factor=1, s
         if splat:
             ply = Path(splat)
         else:
-            job.update(step='train')
+            spread = camera_spread(metadata)
+            job.update(step='train', cameraSpread=round(spread, 3))
+            if spread < MIN_SPREAD:
+                raise ValueError('The photos were all taken from about one spot. Walk around the room while '
+                                 'scanning so the photos see it from different positions.')
             if factor > 1:
                 downscale(dataset, factor)
             result = job.root / 'train'
             command = trainer_command()
+            env = trainer_env(command)
             help_text = subprocess.run(command + [PRESETS[preset]['strategy'], '--help'],
-                                       capture_output=True, text=True).stdout
+                                       capture_output=True, text=True, env=env).stdout
             log = open(job.root / 'train.log', 'w')
             with log:
-                trained = subprocess.run(command + train_args(preset, dataset, result, steps, factor, help_text),
-                                         stdout=log, stderr=subprocess.STDOUT)
+                trained = subprocess.run(command + train_args(preset, dataset, result, steps, factor, help_text,
+                                                              max(1.0, TARGET_SPREAD / spread)),
+                                         stdout=log, stderr=subprocess.STDOUT, env=env)
             if trained.returncode:
                 raise RuntimeError(f'training failed (exit {trained.returncode}); see train.log')
-            stage = f'val_step{steps - 1}'
-            stats_file = result / 'stats' / f'{stage}.json'
+            stage = f'val_step{steps - 1}'  # renders: val_step299_0000.png; stats: val_step0299.json
+            stats_file = result / 'stats' / f'val_step{steps - 1:04d}.json'
             stats = json.loads(stats_file.read_text()) if stats_file.exists() else {}
             metrics = {k: stats[k] for k in ('psnr', 'ssim', 'lpips', 'cc_psnr', 'cc_ssim', 'cc_lpips', 'num_GS') if k in stats}
             plys = sorted((result / 'ply').glob('point_cloud_*.ply'), key=lambda p: int(p.stem.split('_')[-1]))

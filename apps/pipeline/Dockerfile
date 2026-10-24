@@ -28,6 +28,7 @@ COPY apps/pipeline/requirements.txt /app/apps/pipeline/requirements.txt
 RUN pip install -r /app/apps/pipeline/requirements.txt
 COPY .agents/skills/scan-to-threejs/scripts /app/.agents/skills/scan-to-threejs/scripts
 COPY apps/pipeline /app/apps/pipeline
+RUN python /app/apps/pipeline/patch_trainer.py /opt/gsplat/examples
 
 WORKDIR /app/apps/pipeline
 ENV GSPLAT_DIR=/opt/gsplat \

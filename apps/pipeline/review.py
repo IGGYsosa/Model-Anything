@@ -129,6 +129,20 @@ def sides(normals):
     return np.where(a.max(1) == 0, 6, code)
 
 
+def comparison(views, members, reason):
+    """The held-out view to show for an area: where the result differs most from the photo for
+    an inaccurate area, the one that sees most of it otherwise. None if no view sees it."""
+    best, best_score = None, 0.0
+    for view in views:
+        seen = np.isin(view['points'], members)
+        if seen.sum() < 5:
+            continue
+        score = float(view['errors'][seen].mean()) if reason == 'inaccurate' else float(seen.sum())
+        if score > best_score:
+            best, best_score = view, score
+    return best
+
+
 def review(dataset, scene, renders=None, stage=None, layout=None):
     """Writes scene/review/* and returns the `review` block for scene.json."""
     dataset, scene = Path(dataset), Path(scene)
@@ -162,7 +176,7 @@ def review(dataset, scene, renders=None, stage=None, layout=None):
         photo, rendered = save_comparison(canvas, scene, f'view-{n:02d}')
         pose = poses.get(image['source'], {})
         views.append({'name': image['name'], 'psnr': round(99.0 if mse == 0 else -10 * math.log10(mse), 2),
-                      'photo': photo, 'render': rendered, 'points': idx,
+                      'photo': photo, 'render': rendered, 'points': idx, 'errors': diff[py, px],
                       **{k: pose[k] for k in ('position', 'forward', 'up', 'fovY', 'aspect') if k in pose}})
 
     inaccurate = error > ERROR_LIMIT
@@ -188,10 +202,7 @@ def review(dataset, scene, renders=None, stage=None, layout=None):
         severity = float(np.clip(error[members].mean() / ERROR_LIMIT, 0, 3) if reason == 'inaccurate'
                          else 1 - coverage[members].mean() / MIN_VIEWS)
         eye = viewpoint(center, normal, lo, hi)
-        member_set = set(members.tolist())
-        best = max(views, key=lambda view: len(member_set.intersection(view['points'].tolist())), default=None)
-        if best is not None and not member_set.intersection(best['points'].tolist()):
-            best = None
+        best = comparison(views, members, reason)
         where = SIDES[int(np.bincount(surface[members]).argmax())]
         text = (f'{where[0].upper()}{where[1:]} near ({center[0]:.1f}, {center[2]:.1f}) m: '
                 + ('blurry or smeared in the result. Retake it slowly from about 1.5 m, holding still for each photo.'
@@ -219,6 +230,7 @@ def review(dataset, scene, renders=None, stage=None, layout=None):
 
     for view in views:
         view.pop('points')
+        view.pop('errors')
     return {'format': 'model-anything-review/1', 'weakPoints': 'review/weak.bin', 'weakPointCount': int(len(sample)),
             'weakFraction': round(float(weak.mean()), 4) if len(xyz) else 0,
             'thresholds': {'error': ERROR_LIMIT, 'minViews': MIN_VIEWS},

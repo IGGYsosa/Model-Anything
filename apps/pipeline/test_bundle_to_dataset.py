@@ -44,8 +44,9 @@ def wall(center, along, length, height=2.5):
             'confidence': {'high': {}}}
 
 
-def make_bundle(bundle):
-    """Synthetic one-room session (room index 2) in a rotated, offset ARKit world; returns photos."""
+def make_bundle(bundle, size=(160, 120), focal=100, count=13):
+    """Synthetic one-room session (room index 2) in a rotated, offset ARKit world; returns photos.
+    The last photo belongs to another room; smoke_test.py makes bigger, rendered ones."""
     (bundle / 'rooms').mkdir(parents=True)
     (bundle / 'photos').mkdir()
     (bundle / 'mesh').mkdir()
@@ -86,18 +87,21 @@ def make_bundle(bundle):
               + 'element face 0\nproperty list uchar uint vertex_indices\nproperty uchar class\nend_header\n')
     (bundle / 'mesh/room-2.ply').write_bytes(header.encode() + vert.tobytes())
 
-    # 12 photos from the middle of the room turning around; one blurry, one with lost tracking,
+    # 12 photos walking around the middle of the room; one blurry, one with lost tracking,
     # one from another room. Every image is the same color, unlike the PLY's red heatmap.
     exif = Image.Exif()
     exif[0x0112] = 6
     photos = []
-    for i in range(13):
+    w, h = size
+    k = [focal, 0, 0, 0, focal, 0, w / 2, h / 2, 1]
+    for i in range(count):
+        phi = i * math.tau / (count - 1)  # walking a 0.5 m circle, looking out across the room
         file = f'photos/{i:04d}.jpg'
-        Image.new('RGB', (160, 120), (10, 200, 30)).save(bundle / file, quality=95, exif=exif)
-        photos.append({'file': file, 'room': 2 if i < 12 else 1, 'width': 160, 'height': 120,
-                       'intrinsics': K, 'tracking': 'normal', 'blurPixels': 0.2, 'exposure': 0.01,
+        Image.new('RGB', size, (10, 200, 30)).save(bundle / file, quality=95, exif=exif)
+        photos.append({'file': file, 'room': 2 if i < count - 1 else 1, 'width': w, 'height': h,
+                       'intrinsics': k, 'tracking': 'normal', 'blurPixels': 0.2, 'exposure': 0.01,
                        'camera': {'iso': 100 + i, 'shutter': 0.01},
-                       'transform': cm(world(yaw(i * math.tau / 12, (0.2, 1.4, 0.1))))})
+                       'transform': cm(world(yaw(phi, (0.2 + 0.5 * math.sin(phi), 1.4, 0.1 + 0.5 * math.cos(phi)))))})
     photos[3]['blurPixels'] = 9.0
     photos[5]['tracking'] = 'limited:excessiveMotion'
     (bundle / 'photos/photos.json').write_text(json.dumps(photos))
@@ -110,7 +114,7 @@ class DatasetTests(unittest.TestCase):
         self.bundle = Path(self.temp.name) / 'session'
         self.photos = make_bundle(self.bundle)
         self.out = Path(self.temp.name) / 'dataset'
-        self.meta = build(self.bundle, self.out, text=True)
+        self.meta = build(self.bundle, self.out, binary=False)  # text, to read back here
 
     def tearDown(self):
         self.temp.cleanup()

@@ -604,10 +604,12 @@ function restoreCameraLink() {
 
 // Keep the recorded angle across development rebuilds. Each room has its own
 // session-only camera; a broken/stale entry must never prevent a room loading.
+// every photoreal scene has the room id 'scene': keep their views apart
+const liveKey = (id: string) => `room-viewer:live:${id === 'scene' ? `scene:${sceneURL}` : id}`;
 function saveLiveView() {
   if (!import.meta.env.DEV || !room || mode !== 'orbit' ) return;
   try {
-    sessionStorage.setItem(`room-viewer:live:${activeRoomId}`, JSON.stringify({
+    sessionStorage.setItem(liveKey(activeRoomId), JSON.stringify({
       position: camera.position.toArray(), target: orbit.target.toArray(), quality,
     }));
   } catch { /* Private browsing can disable storage. */ }
@@ -615,7 +617,7 @@ function saveLiveView() {
 function restoreLiveView(id: string) {
   if (!import.meta.env.DEV) return;
   try {
-    const saved = JSON.parse(sessionStorage.getItem(`room-viewer:live:${id}`) ?? 'null');
+    const saved = JSON.parse(sessionStorage.getItem(liveKey(id)) ?? 'null');
     const valid = (v: unknown): v is number[] => Array.isArray(v) && v.length === 3
       && v.every(n => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 1000);
     if (!valid(saved?.position) || !valid(saved?.target)) return;
