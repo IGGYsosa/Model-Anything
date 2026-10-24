@@ -1,5 +1,7 @@
 name: Check public release
-on: [push, pull_request]
+# manual only: Actions minutes are billed (run it from the Actions tab when wanted)
+on:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
