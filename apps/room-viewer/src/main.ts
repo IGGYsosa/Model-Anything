@@ -1,6 +1,7 @@
 import { appURL } from './asset-base';
 import { collectInventory, showKnolling, stopKnolling } from './knolling';
 import { showLayout } from './layout';
+import { showRescan } from './rescan';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
@@ -127,6 +128,7 @@ let activeRoomId = '';
 let roomRequest = 0;
 const layoutHost = document.querySelector<HTMLElement>('#layout')!;
 const knollingHost = document.querySelector<HTMLElement>('#knolling')!;
+const rescanHost = document.querySelector<HTMLElement>('#rescan')!;
 let reference: THREE.Object3D | undefined;
 let referenceLoading: Promise<THREE.Object3D> | undefined;
 let referenceEpoch = 0;
@@ -256,6 +258,13 @@ async function loadRoom(id: string, updated?: RoomModule) {
   // Release the superseded GPU allocations after the replacement is compiled.
   releaseReplaced();
   if (mode === 'knolling') void showKnolling(knollingHost, room, mod.label);
+  showRescan(rescanHost, room.rescan, {
+    focus: (position, target) => {
+      if (mode !== 'orbit') setMode('orbit');
+      moveCamera(new THREE.Vector3(...position), new THREE.Vector3(...target));
+    },
+    redraw: invalidate,
+  });
   invalidate();
 }
 

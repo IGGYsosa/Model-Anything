@@ -37,6 +37,13 @@
             <button data-source="wireframe" aria-pressed="false">Wireframe</button>
           </div>
         </section>
+        <section class="control-section" id="rescan" hidden aria-label="Rescan guidance">
+          <h2>Rescan <span class="section-note" id="rescan-summary"></span></h2>
+          <label class="rescan-toggle"><input type="checkbox" id="rescan-show" checked> Show weak spots</label>
+          <p class="rescan-legend"><span class="inaccurate">Blurry or smeared</span><span class="few-photos">Too few photos</span></p>
+          <div class="rescan-list"></div>
+          <div class="rescan-detail" hidden aria-live="polite"></div>
+        </section>
         <section class="control-section" id="navigation" aria-label="Camera views">
           <h2>Camera</h2>
           <div class="camera-grid">

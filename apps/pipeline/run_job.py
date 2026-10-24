@@ -18,7 +18,6 @@ script runs in the Docker image and against a local gsplat checkout.
 import argparse
 from datetime import datetime, timezone
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -33,6 +32,7 @@ import numpy as np
 from PIL import Image
 
 from bundle_to_dataset import build
+from review import review
 
 # gsplat simple_trainer options per preset (strategy subcommand first). MCMC densification,
 # anti-aliasing, a bilateral grid for the phone's per-photo auto exposure, and depth loss
@@ -124,38 +124,6 @@ def downscale(dataset, factor):
         im.resize((im.width // factor, im.height // factor), Image.LANCZOS).save(out / src.name, quality=95)
 
 
-def per_view_psnr(renders, stage_step):
-    """PSNR of each held-out render; gsplat saves ground truth | render side by side."""
-    scores = []
-    for path in sorted(renders.glob(f'{stage_step}_*.png')):
-        canvas = np.asarray(Image.open(path).convert('RGB'), dtype=np.float64) / 255
-        half = canvas.shape[1] // 2
-        mse = np.mean((canvas[:, :half] - canvas[:, half:half * 2]) ** 2)
-        scores.append(round(99.0 if mse == 0 else -10 * math.log10(mse), 2))
-    return scores
-
-
-def side(forward):
-    x, z = forward[0], forward[2]
-    return ('+X' if x > 0 else '-X') if abs(x) >= abs(z) else ('+Z' if z > 0 else '-Z')
-
-
-def capture_hints(metadata, scores, floor):
-    """Weak held-out views → where to take more photos (room coordinates, meters)."""
-    held = [i for i in metadata['images'] if i['heldOut']]
-    poses = {p['file']: p for p in metadata['layout']['photos']}
-    hints = []
-    for image, score in sorted(zip(held, scores), key=lambda pair: pair[1]):
-        pose = poses.get(image['source'])
-        if score >= floor or not pose:
-            continue
-        x, _, z = pose['position']
-        hints.append({'psnr': score, 'position': pose['position'], 'forward': pose['forward'],
-                      'text': f'Add photos from about ({x:.1f}, {z:.1f}) m looking toward the {side(pose["forward"])} side '
-                              f'(held-out view scored {score:.1f} dB).'})
-    return hints[:5]
-
-
 def room_layout(layout):
     """bundle_to_room.py output → the viewer's RoomLayout"""
     walls = [{'a': w['a'], 'b': w['b'], 'u': w['u'], 'length': w['length'],
@@ -218,7 +186,7 @@ def run(source, job_dir, room=None, preset='interior', steps=30_000, factor=1, s
         job.update(room=metadata['room'], roomName=metadata['roomName'], photos=len(metadata['images']),
                    skipped=len(metadata['skipped']), seedPoints=metadata['points'])
 
-        metrics, hints, views = {}, [], []
+        metrics, renders, stage = {}, None, None
         if splat:
             ply = Path(splat)
         else:
@@ -244,24 +212,29 @@ def run(source, job_dir, room=None, preset='interior', steps=30_000, factor=1, s
                 raise RuntimeError('training produced no PLY')
             ply = plys[-1]
 
-            job.update(step='qc')
-            views = per_view_psnr(result / 'renders', stage)
+            renders = result / 'renders'
             psnr = metrics.get('cc_psnr', metrics.get('psnr'))
             if psnr is not None:
                 metrics['quality'] = next((label for floor, label in QUALITY if psnr >= floor), 'poor')
-            hints = capture_hints(metadata, views, QUALITY[-1][0])
 
-        job.update(step='package')
+        job.update(step='qc')
         scene = job.root / 'scene'
         if scene.exists():
             shutil.rmtree(scene)
         scene.mkdir()
+        # weak areas: inaccurate in held-out renders (when trained) or seen by too few photos
+        findings = review(dataset, scene, renders, stage, metadata['layout'])
+        hints = [{k: a[k] for k in ('id', 'text', 'reason', 'side', 'center', 'min', 'max')} for a in findings['areas']]
+
+        job.update(step='package')
         package = {
             'format': 'model-anything-scene/1', 'name': metadata['roomName'] or f'Room {metadata["room"]}',
             'splat': compress(ply, scene), 'createdAt': now(), 'preset': preset,
             'layout': room_layout(metadata['layout']), 'camera': cameras(metadata['layout']),
             'height': max([w['height'] for w in metadata['layout']['walls']] or [2.5]),
-            'metrics': metrics, 'heldOutPsnr': views, 'hints': [h['text'] for h in hints],
+            'metrics': metrics, 'hints': [h['text'] for h in hints], 'review': findings,
+            # room → the capture session's ARKit world (column-major), for rescan targets on the phone
+            'worldToRoom': metadata['worldToRoom'],
         }
         (scene / 'scene.json').write_text(json.dumps(package, indent=1))
         job.update(state='done', step=None, metrics=metrics, hints=hints, scene='scene/scene.json', finishedAt=now())

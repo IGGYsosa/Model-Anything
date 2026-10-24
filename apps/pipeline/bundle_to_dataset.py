@@ -11,7 +11,7 @@ Writes (out must not exist):
   sparse/0/*.bin           COLMAP model: PINHOLE camera per photo, ARKit poses (no
                            structure-from-motion), LiDAR seed points with per-photo
                            visibility tracks (gsplat's depth loss uses these)
-  points3D.ply             the seed points, for trainers that take a PLY
+  points3D.ply             the seed points (with normals), for trainers that take a PLY
   transforms.json          Nerfstudio-style poses (OpenGL camera convention)
   metadata.json            room layout, per-photo exposure/blur, held-out split
 
@@ -240,7 +240,9 @@ def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, 
         meta.append({'name': name, 'source': p['file'], 'heldOut': i % HELD_OUT_EVERY == 0,
                      'exposure': p.get('exposure'), 'iso': cs.get('iso'), 'shutter': cs.get('shutter'),
                      'exposureOffset': cs.get('exposureOffset'), 'blurPixels': p.get('blurPixels'),
-                     'highRes': bool(p.get('highRes')), 'manual': bool(p.get('manual')), 'mask': None})
+                     'highRes': bool(p.get('highRes')), 'manual': bool(p.get('manual')), 'mask': None,
+                     # room → OpenCV camera and pixels, for the QC/review pass
+                     'w2c': w2c.reshape(-1).tolist(), 'k': list(k), 'size': [p['width'], p['height']]})
 
     # Seed colors from each point's best photo; points no photo sees well are dropped.
     seen = np.nonzero(best_img >= 0)[0]
@@ -253,7 +255,7 @@ def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, 
             pixels = np.asarray(Image.open(out / 'images' / images[i]['name']).convert('RGB'))
             uv = np.clip(best_uv[mine].astype(int), 0, [p['width'] - 1, p['height'] - 1])
             rgb[remap[mine]] = pixels[uv[:, 1], uv[:, 0]]
-    xyz = xyz[seen]
+    xyz, normals = xyz[seen], normals[seen]
 
     rng = np.random.default_rng(0)
     tracks = [[] for _ in range(len(xyz))]
@@ -268,7 +270,7 @@ def build(bundle, out, room=None, max_blur=4.0, voxel=0.01, max_points=300_000, 
             tracks[pid].append((i + 1, j))
 
     write_colmap(out / 'sparse/0', cams, images, xyz, rgb, tracks, text)
-    write_points(out / 'points3D.ply', xyz, rgb)
+    write_points(out / 'points3D.ply', xyz, rgb, normals)
     (out / 'transforms.json').write_text(json.dumps({'camera_model': 'OPENCV', 'ply_file_path': 'points3D.ply',
                                                      'frames': frames}, indent=1))
     metadata = {'format': 'model-anything-dataset/1', 'source': str(bundle), 'room': room,

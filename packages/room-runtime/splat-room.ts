@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SplatEdit, SplatEditSdf, SplatEditSdfType, SplatMesh } from '@sparkjsdev/spark';
-import type { BuiltRoom, RoomLayout, RoomModule } from './types';
+import type { BuiltRoom, RoomLayout, RoomModule, V3 } from './types';
+import { RESCAN_COLORS } from './splat-room-colors';
 
 /** scene.json written by apps/pipeline/run_job.py: a trained splat in room coordinates
  * (meters, +Y up, floor at 0) plus the RoomPlan layout it lines up with. */
@@ -14,7 +15,44 @@ export interface ScenePackage {
   height?: number;
   metrics?: Record<string, number | string>;
   hints?: string[];
+  review?: SceneReview;
 }
+
+/** Where the scene is weak and where to rescan (apps/pipeline/review.py), room coordinates. */
+export interface SceneReview {
+  weakPoints: string;
+  weakPointCount: number;
+  weakFraction: number;
+  areas: RescanArea[];
+  views: RescanView[];
+}
+export interface RescanArea {
+  id: number;
+  /** inaccurate: the result differs from a held-out photo; few-photos: too few photos see it */
+  reason: 'inaccurate' | 'few-photos';
+  severity: number;
+  points: number;
+  center: V3; min: V3; max: V3; normal: V3;
+  side: string;
+  viewpoint: { position: V3; target: V3 };
+  /** index into views of a held-out photo that sees this area */
+  view: number | null;
+  text: string;
+}
+export interface RescanView {
+  name: string;
+  psnr: number;
+  /** URLs (resolved against scene.json) of the real photo and the render from the same pose */
+  photo: string;
+  render: string;
+}
+/** The weak-spot markers drawn in the scene */
+export interface RescanOverlay {
+  review: SceneReview;
+  group: THREE.Group;
+  highlight(id: number | null): void;
+}
+
 
 export async function loadScenePackage(url: string): Promise<ScenePackage> {
   const response = await fetch(url);
@@ -24,6 +62,95 @@ export async function loadScenePackage(url: string): Promise<ScenePackage> {
     throw new Error(`scene ${url}: not a model-anything-scene/1 package`);
   }
   return scene;
+}
+
+function label(text: string, color: string) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(32, 32, 28, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.font = 'bold 30px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 32, 34);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
+  sprite.scale.setScalar(0.22);
+  sprite.renderOrder = 1002;
+  return sprite;
+}
+
+/** Boxes, numbered badges and dots for the review's weak areas. Drawn over the splat. */
+async function rescanOverlay(base: URL, review: SceneReview): Promise<RescanOverlay> {
+  const group = new THREE.Group();
+  group.name = 'rescan-overlay';
+  const response = await fetch(new URL(review.weakPoints, base)).catch(() => undefined);
+  if (response?.ok) {
+    const packed = new Float32Array(await response.arrayBuffer());
+    const count = Math.floor(packed.length / 4);
+    const positions = new Float32Array(count * 3), colors = new Float32Array(count * 3);
+    const red = new THREE.Color(RESCAN_COLORS.inaccurate), amber = new THREE.Color(RESCAN_COLORS['few-photos']);
+    for (let i = 0; i < count; i++) {
+      positions.set(packed.subarray(i * 4, i * 4 + 3), i * 3);
+      (packed[i * 4 + 3] > 0.5 ? red : amber).toArray(colors, i * 3);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const dots = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.02, vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false }));
+    dots.name = 'weak-points';
+    dots.renderOrder = 1000;
+    group.add(dots);
+  }
+  const markers = review.areas.map(area => {
+    const color = RESCAN_COLORS[area.reason];
+    const size = new THREE.Vector3(...area.max).sub(new THREE.Vector3(...area.min));
+    const center = new THREE.Vector3(...area.max).add(new THREE.Vector3(...area.min)).multiplyScalar(0.5);
+    const box = new THREE.BoxGeometry(size.x, size.y, size.z);
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box),
+      new THREE.LineBasicMaterial({ color, transparent: true, depthTest: false }));
+    const fill = new THREE.Mesh(box, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, depthWrite: false }));
+    const badge = label(String(area.id), color);
+    badge.position.set(0, size.y / 2 + 0.16, 0);
+    const marker = new THREE.Group();
+    marker.name = `weak-area-${area.id}`;
+    marker.position.copy(center);
+    edges.renderOrder = fill.renderOrder = 1001;
+    marker.add(fill, edges, badge);
+    group.add(marker);
+    return { id: area.id, edges, fill, badge };
+  });
+  // where to stand for the selected area's photos: a ring on the floor and a post to eye height
+  const stand = new THREE.Group();
+  stand.name = 'stand-here';
+  const standColor = '#8fd18b';
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.24, 40),
+    new THREE.MeshBasicMaterial({ color: standColor, transparent: true, depthTest: false, side: THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.01;
+  const post = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1.5, 0)]),
+    new THREE.LineBasicMaterial({ color: standColor, transparent: true, depthTest: false }));
+  ring.renderOrder = post.renderOrder = 1003;
+  stand.add(ring, post);
+  stand.visible = false;
+  group.add(stand);
+  return {
+    review, group,
+    highlight(id) {
+      const area = review.areas.find(a => a.id === id);
+      stand.visible = !!area;
+      if (area) stand.position.set(area.viewpoint.position[0], 0, area.viewpoint.position[2]);
+      for (const m of markers) {
+        const on = id === null || m.id === id;
+        (m.edges.material as THREE.LineBasicMaterial).opacity = on ? 1 : 0.25;
+        (m.fill.material as THREE.MeshBasicMaterial).opacity = id === m.id ? 0.2 : on ? 0.12 : 0.04;
+        (m.badge.material as THREE.SpriteMaterial).opacity = on ? 1 : 0.35;
+        m.badge.scale.setScalar(id === m.id ? 0.3 : 0.22);
+      }
+    },
+  };
 }
 
 function inside(polygon: number[][], x: number, z: number) {
@@ -74,6 +201,16 @@ export function splatRoom(id: string, sceneURL: string, scene: ScenePackage): Ro
       ceiling.visible = false;
       splat.add(ceiling);
 
+      let rescan: RescanOverlay | undefined;
+      if (scene.review?.areas) {
+        rescan = await rescanOverlay(base, scene.review);
+        for (const view of scene.review.views) {
+          view.photo = new URL(view.photo, base).href;
+          view.render = new URL(view.render, base).href;
+        }
+        group.add(rescan.group);
+      }
+
       const xs = layout.polygon.map(p => p[0]), zs = layout.polygon.map(p => p[1]);
       const bounds = new THREE.Box3(new THREE.Vector3(Math.min(...xs), 0, Math.min(...zs)),
         new THREE.Vector3(Math.max(...xs), height, Math.max(...zs)));
@@ -99,6 +236,7 @@ export function splatRoom(id: string, sceneURL: string, scene: ScenePackage): Ro
         referenceAvailable: false,
         referenceKind: 'scan',
         photos: [],
+        rescan,
       };
       return room;
     },

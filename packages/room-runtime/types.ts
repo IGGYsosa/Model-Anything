@@ -12,6 +12,8 @@ export interface BuiltRoom {
   bounds?: THREE.Box3;
   /** custom dollhouse cutaway for rooms whose walls aren't separate meshes */
   cutaway?(eye: THREE.Vector3, walking: boolean): void;
+  /** weak-spot markers and rescan guidance for a photoreal scene */
+  rescan?: import('./splat-room').RescanOverlay;
   group: THREE.Group;
   lights: THREE.Group;
   /** walls with everything mounted on them, for the dollhouse cutaway */

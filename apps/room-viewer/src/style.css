@@ -100,3 +100,25 @@ body.layout-mode .quality-section, body.knolling-mode .quality-section { display
 #camera-copy-status { display: block; font-size: 11px; margin-top: 5px; }
 
 
+
+/* Rescan guidance for photoreal scenes */
+.rescan-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b7c2ba; min-height: 32px; }
+.rescan-toggle input { accent-color: #c2d7a9; width: 16px; height: 16px; }
+.rescan-legend { display: flex; gap: 14px; margin: 4px 0 10px; font-size: 10px; color: #8d9c92; }
+.rescan-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.rescan-legend .inaccurate::before { background: #ff5a4f; }
+.rescan-legend .few-photos::before { background: #f2b33d; }
+.rescan-list { display: grid; gap: 4px; }
+.rescan-list button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 6px 8px; border-color: #ffffff10; background: #ffffff04; }
+.rescan-list button[aria-pressed=true] { border-color: var(--marker); background: #ffffff0d; }
+.rescan-badge { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--marker); color: #1a1a1a; font-size: 11px; font-weight: 700; }
+.rescan-label { display: grid; gap: 1px; }
+.rescan-label strong { font-size: 12px; font-weight: 600; color: #dfe7e1; }
+.rescan-label small { font-size: 10px; color: #8d9c92; }
+.rescan-detail { margin-top: 12px; padding: 10px; border: 1px solid #ffffff12; border-radius: 8px; background: #111613; }
+.rescan-detail p { margin: 0; font-size: 11px; line-height: 1.6; color: #c4cec7; }
+.rescan-detail .help { margin-top: 8px; line-height: 1.6; }
+.rescan-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+.rescan-compare figure { margin: 0; }
+.rescan-compare img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 4px; background: #222; }
+.rescan-compare figcaption { margin-top: 4px; font-size: 10px; color: #8d9c92; }

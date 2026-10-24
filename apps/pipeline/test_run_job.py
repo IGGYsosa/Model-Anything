@@ -43,7 +43,7 @@ write_splat(result / 'ply' / f'point_cloud_{steps - 1}.ply', xyz, rgb, scale)
 rng = np.random.default_rng(1)
 images = sorted((data / 'images').glob('*.jpg'))
 for i, path in enumerate(images[::8]):
-    gt = np.full((40, 50, 3), 120, np.uint8)
+    gt = np.full((30, 40, 3), 120, np.uint8)  # the photos are 160×120, trained at 1/4
     render = gt.copy() if i == 0 else rng.integers(0, 255, gt.shape, dtype=np.uint8)
     Image.fromarray(np.concatenate([gt, render], 1)).save(result / 'renders' / f'val_step{steps - 1}_{i:04d}.png')
 '''
@@ -86,9 +86,6 @@ class JobTests(unittest.TestCase):
         for flag in ('--save-ply', '--antialiased', '--depth-loss', '--use-bilateral-grid', '--no-normalize-world-space'):
             self.assertIn(flag, args)
         self.assertNotIn('--pose-opt', args)
-        # the noisy second held-out view becomes the only capture hint, located at that photo
-        self.assertEqual(len(data['hints']), 1)
-        self.assertLess(data['hints'][0]['psnr'], 22)
         scene = json.loads((job / 'scene/scene.json').read_text())
         self.assertEqual(scene['format'], 'model-anything-scene/1')
         self.assertEqual(scene['name'], 'Patio')
@@ -96,8 +93,29 @@ class JobTests(unittest.TestCase):
         self.assertEqual(len(scene['layout']['walls']), 4)
         self.assertEqual(len(scene['layout']['polygon']), 4)
         self.assertEqual(set(scene['camera']), {'orbit', 'target', 'walk', 'walkLook'})
-        self.assertEqual(scene['heldOutPsnr'][0], 99.0)
-        self.assertEqual(len(scene['hints']), 1)
+        self.assertEqual(len(scene['worldToRoom']), 16)
+
+        review = scene['review']
+        self.assertEqual([v['psnr'] for v in review['views']][0], 99.0)
+        self.assertLess(review['views'][1]['psnr'], 22)
+        for view in review['views']:
+            self.assertTrue((job / 'scene' / view['photo']).is_file())
+            self.assertTrue((job / 'scene' / view['render']).is_file())
+        # the noisy second held-out view shows up as inaccurate areas, linked to that comparison
+        inaccurate = [a for a in review['areas'] if a['reason'] == 'inaccurate']
+        self.assertTrue(inaccurate)
+        self.assertTrue(all(a['view'] == 1 for a in inaccurate))
+        for area in review['areas']:
+            self.assertTrue(all(lo < hi for lo, hi in zip(area['min'], area['max'])))
+            self.assertTrue(all(lo <= c <= hi for lo, c, hi in zip(area['min'], area['center'], area['max'])))
+            self.assertAlmostEqual(area['viewpoint']['position'][1], 1.5)
+        self.assertLessEqual(len(review['areas']), 12)
+        self.assertEqual([a['id'] for a in review['areas']], list(range(1, len(review['areas']) + 1)))
+        weak = (job / 'scene' / review['weakPoints']).read_bytes()
+        self.assertEqual(len(weak), review['weakPointCount'] * 16)
+        # the job carries the areas for the phone; scene.json carries their text
+        self.assertEqual([h['id'] for h in data['hints']], [a['id'] for a in review['areas']])
+        self.assertEqual(scene['hints'], [a['text'] for a in review['areas']])
 
     def test_exterior_preset_refines_poses(self):
         run_job.run(self.zip, self.base / 'job', preset='exterior', steps=10)
@@ -115,6 +133,11 @@ class JobTests(unittest.TestCase):
         data = run_job.run(self.zip, self.base / 'job', splat=splat)
         self.assertEqual(data['state'], 'done')
         self.assertFalse(self.args_out.exists())
+        # without held-out renders, only photo coverage can be judged
+        review = json.loads((self.base / 'job/scene/scene.json').read_text())['review']
+        self.assertEqual(review['views'], [])
+        self.assertTrue(review['areas'])
+        self.assertEqual({a['reason'] for a in review['areas']}, {'few-photos'})
 
     def test_rejects_unsafe_archives_and_records_failure(self):
         bad = self.base / 'bad.zip'

@@ -48,15 +48,18 @@ def read_vertices(path):
         return data
 
 
-def write_points(path, xyz, rgb):
-    """Binary point cloud (x y z red green blue), readable by most splat trainers."""
+def write_points(path, xyz, rgb, normals=None):
+    """Binary point cloud (x y z [nx ny nz] red green blue), readable by most splat trainers."""
     n = len(xyz)
-    arr = np.empty(n, dtype=[('x', '<f4'), ('y', '<f4'), ('z', '<f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    floats = ['x', 'y', 'z'] + (['nx', 'ny', 'nz'] if normals is not None else [])
+    arr = np.empty(n, dtype=[(k, '<f4') for k in floats] + [('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
     arr['x'], arr['y'], arr['z'] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    if normals is not None:
+        arr['nx'], arr['ny'], arr['nz'] = normals[:, 0], normals[:, 1], normals[:, 2]
     arr['red'], arr['green'], arr['blue'] = rgb[:, 0], rgb[:, 1], rgb[:, 2]
-    header = ('ply\nformat binary_little_endian 1.0\n'
-              f'element vertex {n}\nproperty float x\nproperty float y\nproperty float z\n'
-              'property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n')
+    header = (f'ply\nformat binary_little_endian 1.0\nelement vertex {n}\n'
+              + ''.join(f'property float {k}\n' for k in floats)
+              + 'property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n')
     with open(path, 'wb') as f:
         f.write(header.encode('ascii'))
         f.write(arr.tobytes())
