@@ -1,0 +1,230 @@
+name: Build iOS IPA
+
+# Manual only: each run uses a macOS runner. Builds apps/house-capture (3D Model Anything),
+# signs it for App Store Connect with the API key, and uploads it to TestFlight.
+on:
+  workflow_dispatch:
+    inputs:
+      marketing_version:
+        description: "Version shown in TestFlight (CFBundleShortVersionString), e.g. 1.0"
+        required: true
+        default: "1.0"
+        type: string
+      build_number:
+        description: "Optional build number. Leave blank to use the GitHub run number."
+        required: false
+        type: string
+      upload_to_testflight:
+        description: "Upload the signed IPA to App Store Connect/TestFlight."
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Check inputs and secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build_number: ${{ steps.inputs.outputs.build_number }}
+    steps:
+      - name: Validate inputs
+        id: inputs
+        shell: bash
+        env:
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$MARKETING_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+            echo "::error::marketing_version must look like 1, 1.0 or 1.0.1."
+            exit 1
+          fi
+          BUILD_NUMBER="${BUILD_NUMBER:-$GITHUB_RUN_NUMBER}"
+          if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::build_number must be a positive integer."
+            exit 1
+          fi
+          echo "build_number=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Missing GitHub secret(s): %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+  build-ios-ipa:
+    name: Build signed iOS IPA
+    needs: plan
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      PROJECT_DIR: apps/house-capture
+      XCODE_PROJECT: apps/house-capture/HouseCapture.xcodeproj
+      XCODE_SCHEME: HouseCapture
+      APP_BUNDLE_ID: com.iggysosa.modelanything
+      MARKETING_VERSION: ${{ inputs.marketing_version }}
+      BUILD_NUMBER: ${{ needs.plan.outputs.build_number }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # The image's default Xcode: a newer beta Xcode could build, but App Store Connect rejects
+      # uploads made with beta tools.
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i ios
+
+      - name: Generate the Xcode project
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Verify release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PRODUCT_BUNDLE_IDENTIFIER = $APP_BUNDLE_ID;" "$XCODE_PROJECT/project.pbxproj"
+          plist="$PROJECT_DIR/HouseCapture/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist")" = "3D Model Anything"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' "$plist")" = "false"
+          icon="$PROJECT_DIR/HouseCapture/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+          test "$(sips -g pixelWidth "$icon" | awk '/pixelWidth/ { print $2 }')" = "1024"
+          sips -g hasAlpha "$icon" | grep -q 'hasAlpha: no'
+
+      - name: Restore App Store Connect key
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          python3 - "$key_path" <<'PY'
+          import os, sys
+          from pathlib import Path
+          key = os.environ["ASC_PRIVATE_KEY"].replace("\\n", "\n").strip() + "\n"
+          for path in (Path(sys.argv[1]), Path.home() / ".appstoreconnect/private_keys" / f"AuthKey_{os.environ['ASC_KEY_ID']}.p8"):
+              path.write_text(key)
+              path.chmod(0o600)
+          PY
+          echo "ASC_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+
+      - name: Create export options
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios
+          cat > build/ios/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>stripSwiftSymbols</key><true/>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint build/ios/ExportOptions.plist
+
+      - name: Archive app without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$PWD/build/ios/ModelAnything.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            MARKETING_VERSION="$MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_STYLE=Automatic
+
+      - name: Export signed IPA
+        id: export_ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$PWD/build/ios/ModelAnything.xcarchive" \
+            -exportPath "$PWD/build/ios/export" \
+            -exportOptionsPlist "$PWD/build/ios/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          ipa_path="$(find "$PWD/build/ios/export" -maxdepth 1 -name '*.ipa' -print -quit)"
+          if [ -z "$ipa_path" ]; then
+            echo "::error::No IPA was exported."
+            exit 1
+          fi
+          echo "IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
+          echo "ipa_path=$ipa_path" >> "$GITHUB_OUTPUT"
+
+      - name: Verify signed IPA identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/ipa"
+          rm -rf "$proof" && mkdir -p "$proof"
+          unzip -q "$IPA_PATH" -d "$proof"
+          app="$(find "$proof/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)"
+          codesign --verify --deep --strict "$app"
+          id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")"
+          build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")"
+          test "$id" = "$APP_BUNDLE_ID" || { echo "::error::Signed bundle ID $id, expected $APP_BUNDLE_ID."; exit 1; }
+          test "$build" = "$BUILD_NUMBER" || { echo "::error::Signed build $build, expected $BUILD_NUMBER."; exit 1; }
+          test "$version" = "$MARKETING_VERSION" || { echo "::error::Signed version $version, expected $MARKETING_VERSION."; exit 1; }
+          echo "Verified signed IPA: $id version $version build $build"
+
+      - name: Upload to App Store Connect/TestFlight
+        id: upload_testflight
+        if: ${{ inputs.upload_to_testflight }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun altool --upload-app --type ios --file "$IPA_PATH" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Keep the IPA only for build-only runs or a failed upload
+        if: ${{ inputs.upload_to_testflight == false || (failure() && steps.export_ipa.outcome == 'success' && steps.upload_testflight.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModelAnything-iOS-${{ env.BUILD_NUMBER }}
+          path: ${{ steps.export_ipa.outputs.ipa_path }}
+          if-no-files-found: error
+          retention-days: 1

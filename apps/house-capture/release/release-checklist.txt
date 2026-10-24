@@ -7,7 +7,7 @@ Before upload:
 - Add a real public support contact to the support page. Publish release/site on the chosen domain.
 - Set copyright, pricing, reviewer contact and the final store name in App Store Connect.
 - Confirm Apple Developer membership, current agreements, and distribution signing.
-- Create an iOS app record for com.wesbos.housecapture; disable Mac availability for this iOS-first release.
+- Create an iOS app record for com.iggysosa.modelanything (this fork's bundle ID); disable Mac availability for this iOS-first release.
 - Complete Apple's current age-rating and export-compliance questionnaires. The app uses no custom encryption; ITSAppUsesNonExemptEncryption is false.
 - Confirm the final privacy answers. Make photoreal uploads a room's photos, LiDAR mesh and layout to a server the user configures; if you operate that server for users, this is data collection: update the privacy policy, store answers and the in-app wording first.
 - Increment CURRENT_PROJECT_VERSION for each uploaded build.

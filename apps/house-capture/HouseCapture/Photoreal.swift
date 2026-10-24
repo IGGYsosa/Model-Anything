@@ -11,7 +11,7 @@ enum PhotorealSettings {
   private static let urlKey = "photorealServerURL"
   private static let keychain: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
-    kSecAttrService as String: "com.wesbos.housecapture.photoreal",
+    kSecAttrService as String: "com.iggysosa.modelanything.photoreal",
     kSecAttrAccount as String: "token",
   ]
 
