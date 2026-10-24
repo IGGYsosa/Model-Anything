@@ -25,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import traceback
 import zipfile
 
@@ -55,18 +56,34 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+def retry(action, attempts=40):
+    """Windows can't replace a file another process has open (the server reading job.json while
+    the job writes it, or the reverse); such conflicts last milliseconds."""
+    for attempt in range(attempts):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.05)
+
+
+def read_json(path):
+    return retry(lambda: json.loads(Path(path).read_text()))
+
+
 class Job:
     def __init__(self, root):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / 'job.json'
-        self.data = json.loads(self.path.read_text()) if self.path.exists() else {'state': 'queued', 'createdAt': now()}
+        self.data = read_json(self.path) if self.path.exists() else {'state': 'queued', 'createdAt': now()}
 
     def update(self, **fields):
         self.data.update(fields, updatedAt=now())
         tmp = self.path.with_suffix('.tmp')
         tmp.write_text(json.dumps(self.data, indent=1))
-        os.replace(tmp, self.path)
+        retry(lambda: os.replace(tmp, self.path))
 
 
 def unpack(source, dest):

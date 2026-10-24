@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from run_job import PRESETS, Job, now
+from run_job import PRESETS, Job, now, read_json
 
 HERE = Path(__file__).resolve().parent
 JOBS = Path(os.environ.get('MA_JOBS_DIR', HERE.parents[1] / 'data/jobs')).resolve()
@@ -124,14 +124,14 @@ async def create(bundle: UploadFile = File(...), room: int | None = Form(None), 
 def recent(limit: int = 50):
     jobs = []
     for path in JOBS.glob('*/job.json'):
-        data = json.loads(path.read_text())
+        data = read_json(path)
         jobs.append({'id': path.parent.name, **{k: data.get(k) for k in ('state', 'step', 'name', 'roomName', 'createdAt')}})
     return sorted(jobs, key=lambda j: j['createdAt'] or '', reverse=True)[:limit]
 
 
 @app.get('/jobs/{job_id}')
 def status(job_id: str):
-    data = json.loads((job_dir(job_id) / 'job.json').read_text())
+    data = read_json(job_dir(job_id) / 'job.json')
     data.pop('trace', None)
     return {'id': job_id, **data}
 
