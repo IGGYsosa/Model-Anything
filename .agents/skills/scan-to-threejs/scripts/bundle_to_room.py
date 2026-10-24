@@ -37,17 +37,11 @@ def apply(m, p, w=1.0):
     return [sum(m[i][k] * v[k] for k in range(4)) for i in range(3)]
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('bundle')
-    ap.add_argument('--room', type=int, default=None, help='room index (default: structure.json, all rooms)')
-    ap.add_argument('-o', default=None)
-    ap.add_argument('--plan', default=None)
-    ap.add_argument('--turn', type=int, default=0, help='extra quarter turns (90° each, counter-clockwise seen from above) to match another scan')
-    a = ap.parse_args()
-
-    src = os.path.join(a.bundle, 'structure.json' if a.room is None else f'rooms/room-{a.room}.json')
-    S = json.load(open(src))
+def convert(bundle, room=None, turn=0):
+    """The room JSON described above, as a dict (importable; main() writes it)."""
+    src = os.path.join(bundle, 'structure.json' if room is None else f'rooms/room-{room}.json')
+    with open(src) as f:
+        S = json.load(f)
     walls = S['walls']
 
     # --- floor height: floor surface if present, else wall bottoms --------------
@@ -64,7 +58,7 @@ def main():
         sx += math.cos(ang) * w['dimensions'][0]
         sy += math.sin(ang) * w['dimensions'][0]
     theta = math.atan2(sy, sx) / 4  # walls run at theta (+k·90°) in world x/z
-    theta -= a.turn * math.pi / 2
+    theta -= turn * math.pi / 2
 
     # rotate by -theta about Y (x/z plane), then center
     c, s = math.cos(-theta), math.sin(-theta)
@@ -167,9 +161,13 @@ def main():
 
     # --- photos (upright framing: image up = sensor -x, right = sensor +y) -----------
     photos = []
-    pj = os.path.join(a.bundle, 'photos/photos.json')
-    for p in (json.load(open(pj)) if os.path.exists(pj) else []):
-        if a.room is not None and p['room'] != a.room:
+    pj = os.path.join(bundle, 'photos/photos.json')
+    recorded = []
+    if os.path.exists(pj):
+        with open(pj) as f:
+            recorded = json.load(f)
+    for p in recorded:
+        if room is not None and p['room'] != room:
             continue
         pm = mat(p['transform'])
         pos = to_room(col(pm, 3))
@@ -184,12 +182,25 @@ def main():
             'blurPixels': p.get('blurPixels'),
         })
 
-    result = {
-        'source': os.path.basename(os.path.normpath(a.bundle)) + ('' if a.room is None else f' room {a.room}'),
+    return {
+        'source': os.path.basename(os.path.normpath(bundle)) + ('' if room is None else f' room {room}'),
         'transform': {'theta': theta, 'center': [cx, cz], 'floorY': floorY,
                       'worldToRoom': [W2R[r][c] for c in range(4) for r in range(4)]},
         'polygon': poly, 'walls': out_walls, 'objects': objects, 'photos': photos,
     }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('bundle')
+    ap.add_argument('--room', type=int, default=None, help='room index (default: structure.json, all rooms)')
+    ap.add_argument('-o', default=None)
+    ap.add_argument('--plan', default=None)
+    ap.add_argument('--turn', type=int, default=0, help='extra quarter turns (90° each, counter-clockwise seen from above) to match another scan')
+    a = ap.parse_args()
+
+    result = convert(a.bundle, a.room, a.turn)
+    out_walls, objects, photos = result['walls'], result['objects'], result['photos']
     out = a.o or os.path.join(a.bundle, 'room.json')
     json.dump(result, open(out, 'w'), indent=1)
 
