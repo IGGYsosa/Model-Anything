@@ -35,7 +35,7 @@ def write_splat(path, xyz, rgb, scale):
 
 
 def synthetic_room(spacing=0.025):
-    """Checkered floor, three tinted walls (the +Z side open for the dollhouse view), a box."""
+    """Checkered floor, four tinted walls, a ceiling and a box: a closed room for cutaway tests."""
     pts, cols = [], []
     xs, zs, ys = np.arange(-2, 2, spacing), np.arange(-1.5, 1.5, spacing), np.arange(0, 2.5, spacing)
     gx, gz = np.meshgrid(xs, zs)
@@ -47,9 +47,13 @@ def synthetic_room(spacing=0.025):
         pts.append(np.stack([np.full_like(gz, x0), gy, gz], -1).reshape(-1, 3))
         cols.append(np.tile(color, (gz.size, 1)))
     gx, gy = np.meshgrid(xs, ys)
-    pts.append(np.stack([gx, gy, np.full_like(gx, -1.5)], -1).reshape(-1, 3))
     window = ((np.abs(gx) < 0.6) & (gy > 0.9) & (gy < 1.8)).reshape(-1, 1)
-    cols.append(np.where(window, [80, 140, 220], [225, 225, 230]))
+    for z0, color in ((-1.5, [225, 225, 230]), (1.5, [150, 170, 150])):
+        pts.append(np.stack([gx, gy, np.full_like(gx, z0)], -1).reshape(-1, 3))
+        cols.append(np.where(window, [80, 140, 220], color))
+    gx, gz = np.meshgrid(xs, zs)
+    pts.append(np.stack([gx, np.full_like(gx, 2.5), gz], -1).reshape(-1, 3))
+    cols.append(np.tile([245, 240, 230], (gx.size, 1)))
     b = np.arange(-0.4, 0.4, spacing)
     for axis in range(3):
         for sgn in (-1, 1):

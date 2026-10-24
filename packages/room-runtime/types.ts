@@ -5,7 +5,13 @@ export type V3 = [number, number, number];
 
 /** A rebuilt room, ready to drop into the viewer (or the capture page) */
 export interface BuiltRoom {
+  /** 'splat': a trained Gaussian splat (no lights, AO, env capture or mesh cutaway) */
+  kind?: 'model' | 'splat';
   layout?: RoomLayout;
+  /** extent for camera depth when the group can't be measured (splats) */
+  bounds?: THREE.Box3;
+  /** custom dollhouse cutaway for rooms whose walls aren't separate meshes */
+  cutaway?(eye: THREE.Vector3, walking: boolean): void;
   group: THREE.Group;
   lights: THREE.Group;
   /** walls with everything mounted on them, for the dollhouse cutaway */

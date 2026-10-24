@@ -177,7 +177,10 @@ def cameras(layout):
     size = float(np.max(hi - lo))
     height = max([w['height'] for w in layout['walls']] or [2.5])
     target = [round(float(center[0]), 3), round(height * 0.4, 3), round(float(center[1]), 3)]
-    orbit = [round(target[0] + size * 0.75, 3), round(height + size * 0.8, 3), round(target[2] + size * 0.95, 3)]
+    # home view from just inside the far corner, above eye height: splats only look right from
+    # where the photos were taken, so the dollhouse view starts inside rather than overhead
+    corner = hi - np.minimum(0.45, (hi - lo) * 0.15)
+    orbit = [round(float(corner[0]), 3), round(min(height - 0.25, 2.0), 3), round(float(corner[1]), 3)]
     photo = layout['photos'][0] if layout['photos'] else None
     walk = [target[0], 1.6, target[2]] if not photo else [photo['position'][0], 1.6, photo['position'][2]]
     look = [walk[0] + 1, 1.5, walk[2]] if not photo else \

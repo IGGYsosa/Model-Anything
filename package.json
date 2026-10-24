@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
+    "@sparkjsdev/spark": "2.3.1",
     "three": "^0.186.0"
   },
   "devDependencies": {

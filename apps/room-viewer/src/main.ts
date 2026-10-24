@@ -11,6 +11,7 @@ import { disposeObjects } from '../../../packages/room-runtime/dispose';
 import { updateCameraDepth } from '../../../packages/room-runtime/camera-depth';
 import { setMaxAnisotropy } from '../../../packages/room-runtime/materials';
 import { applyRoomRendering, createPipeline, precompileRoomRendering } from '../../../packages/room-runtime/render';
+import type { SparkRenderer } from '@sparkjsdev/spark';
 
 document.querySelector('.play-link')!.addEventListener('click', () => { location.href = appURL('play.html') + location.search; });
 
@@ -93,6 +94,23 @@ if (!canvas.requestPointerLock) {
   walkButton.title = 'Walking requires a browser with mouse pointer lock.';
 }
 
+// ?scene=<scene.json URL> adds a photoreal splat room (a pipeline job's scene package).
+const statusEl = document.querySelector<HTMLOutputElement>('#viewer-status')!;
+const sceneURL = new URLSearchParams(location.search).get('scene');
+let sceneError = '';
+if (sceneURL) {
+  try {
+    // Spark (~2 MB) loads only for photoreal scenes.
+    const { loadScenePackage, splatRoom } = await import('../../../packages/room-runtime/splat-room');
+    ROOMS.unshift(splatRoom('scene', sceneURL, await loadScenePackage(sceneURL)));
+  } catch (error) {
+    console.error(error);
+    sceneError = 'The photoreal scene could not load. Showing the demo room instead.';
+  }
+}
+// Splats are drawn by Spark inside the normal scene render; created with the first splat room.
+let spark: SparkRenderer | undefined;
+
 const roomSelect = document.querySelector<HTMLDivElement>('[data-group="room"]')!;
 for (const r of ROOMS) {
   const b = document.createElement('button');
@@ -107,7 +125,6 @@ let room: BuiltRoom | undefined;
 let roomId = '';
 let activeRoomId = '';
 let roomRequest = 0;
-const statusEl = document.querySelector<HTMLOutputElement>('#viewer-status')!;
 const layoutHost = document.querySelector<HTMLElement>('#layout')!;
 const knollingHost = document.querySelector<HTMLElement>('#knolling')!;
 let reference: THREE.Object3D | undefined;
@@ -119,7 +136,14 @@ let renderedRoom: BuiltRoom | undefined;
 let preparing: Promise<void> | undefined;
 async function prepareRendering() {
   if (preparing) await preparing;
-  if (room && renderedRoom !== room) {
+  if (room?.kind === 'splat' && renderedRoom !== room) {
+    // Captured light is already in the splat colors: no tone mapping, AO, bloom or env capture.
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.toneMappingExposure = 1;
+    pipeline.setBloom(null);
+    renderedRoom = room;
+    invalidate();
+  } else if (room && renderedRoom !== room) {
     const owner = room;
     preparing = (async () => {
     // A cached room may still have its previous camera's cutaway applied.
@@ -188,13 +212,23 @@ async function loadRoom(id: string, updated?: RoomModule) {
   transition = undefined;
   movingRatio = Math.min(window.devicePixelRatio, 1);
   slowFrames = fastFrames = 0;
+  if (room.kind === 'splat' && !spark) {
+    const { SparkRenderer } = await import('@sparkjsdev/spark');
+    spark = new SparkRenderer({ renderer, onDirty: invalidate });
+    scene.add(spark);
+  }
   scene.add(room.group, room.lights);
-  roomBounds.setFromObject(room.group);
+  if (room.bounds) roomBounds.copy(room.bounds);
+  else roomBounds.setFromObject(room.group);
   // The assembled house currently has no combined scan reference.
+  const splat = room.kind === 'splat';
   hud.querySelectorAll<HTMLButtonElement>('[data-source]').forEach(button => {
-    button.disabled = room?.referenceAvailable === false && ['scan', 'overlay'].includes(button.dataset.source ?? '');
+    button.disabled = (room?.referenceAvailable === false && ['scan', 'overlay'].includes(button.dataset.source ?? ''))
+      || (splat && button.dataset.source === 'wireframe');
   });
-  if (room?.referenceAvailable === false && (source === 'scan' || source === 'overlay')) source = 'model';
+  hud.querySelector<HTMLButtonElement>('[data-mode=knolling]')!.disabled = splat;
+  if (splat && mode === 'knolling') setMode('orbit');
+  if ((room?.referenceAvailable === false && (source === 'scan' || source === 'overlay')) || (splat && source === 'wireframe')) source = 'model';
   orbit.maxDistance = mod.id === 'house' ? 80 : 30;
   collectInventory(room);
   room.optimize?.({ static: true });
@@ -391,6 +425,7 @@ const toCam = new THREE.Vector3();
 function updateCutaway() {
   if (!room) return;
   const inside = mode === 'walk';
+  room.cutaway?.(camera.position, inside);
   for (const { def, group } of room.walls) {
     mid.copy(def.origin).addScaledVector(def.u, def.length / 2);
     group.visible = inside || toCam.copy(camera.position).sub(mid).dot(def.n) > 0;
@@ -465,7 +500,9 @@ function moveCamera(position: THREE.Vector3, target: THREE.Vector3) {
 }
 function homePosition() {
   const target = new THREE.Vector3(...room!.camera.target);
-  return new THREE.Vector3(...room!.camera.orbit).sub(target).multiplyScalar(Math.max(1, 1.18 / camera.aspect)).add(target);
+  // Splat homes are inside the room; pulling back for a narrow screen would leave it.
+  const pullBack = room!.kind === 'splat' ? 1 : Math.max(1, 1.18 / camera.aspect);
+  return new THREE.Vector3(...room!.camera.orbit).sub(target).multiplyScalar(pullBack).add(target);
 }
 function preset(view: View) {
   if (!room || mode !== 'orbit') return;
@@ -616,7 +653,7 @@ function renderFrame(time: number) {
   const navigating = (quality === 'fast' || (quality === 'auto' && moving));
   resolution(navigating ? movingRatio : Math.min(devicePixelRatio, 2));
   // Auto changes pixel count while retaining the room's contact shading and glow.
-  const effects = source !== 'scan' && (quality !== 'fast');
+  const effects = source !== 'scan' && (quality !== 'fast') && room.kind !== 'splat';
   if (pipeline.ao !== effects) { pipeline.ao = effects; dirty = true; }
   if (dirty || moved) {
     updateCutaway();
@@ -654,11 +691,12 @@ viewportObserver.observe(viewport);
 // old scene remains visible until a replacement has finished building.
 if (import.meta.hot) {
   import.meta.hot.accept('../../../demos/index', next => {
-    if (next) void loadRoom(roomId, next.roomById(roomId));
+    if (next && roomId !== 'scene') void loadRoom(roomId, next.roomById(roomId));
   });
 }
 
 await loadRoom(new URLSearchParams(location.search).get('room') ?? ROOMS[0].id);
+if (sceneError) statusEl.textContent = sceneError;
 
 const initialView = new URLSearchParams(location.search).get('view');
 if (initialView === 'layout' || initialView === 'knolling') setMode(initialView);
