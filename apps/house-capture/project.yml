@@ -26,6 +26,10 @@ targets:
       path: HouseCapture/Info.plist
       properties:
         CFBundleDisplayName: 3D Model Anything
+        # from the build settings, so the release workflow's version and build number reach the app
+        # (xcodegen otherwise writes literal 1.0 / 1)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: 3D Model Anything uses the camera and LiDAR scanner to measure your rooms and take reference photos.
         # Non-LiDAR devices can import and review scans; capture is checked at runtime.
         ITSAppUsesNonExemptEncryption: false
