@@ -48,6 +48,8 @@ VIEWER_BASE=/viewer/ npm run build
 MA_TOKEN=<secret> docker compose -f apps/pipeline/compose.yaml up --build
 ```
 
+In Git Bash on Windows, prefix the build with `MSYS_NO_PATHCONV=1`, or Git Bash rewrites `/viewer/` into a Windows path and the viewer's assets 404.
+
 The image (`Dockerfile`) pins gsplat 1.5.3 (built for Ampere, Ada and Hopper GPUs) and splat-transform 3.10.1. Jobs are written to `data/jobs/`, which Git ignores. The same image runs on a rented cloud GPU.
 
 The first image build and first real training run have not been verified yet; `run_job.py` reads the trainer's `--help` to spell its boolean flags.
