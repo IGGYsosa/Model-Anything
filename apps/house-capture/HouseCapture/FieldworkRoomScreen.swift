@@ -16,7 +16,13 @@ struct FieldworkRoomScreen: View {
   @State private var deleting = false
   @State private var deletingScan: HouseProject.RoomRef?
   @State private var historyOpen = false
+  @State private var photoreal: PhotorealJob?
+  @State private var uploadProgress: Double?
+  @State private var configuringServer = false
+  @State private var viewing: URL?
   private var room: HouseProject.Room? { house?.rooms.first { $0.id == roomID } }
+  /// photoreal jobs belong to one scan of the room, not the room
+  private var scanKey: String? { room?.active.map { "\(houseID)/\(roomID)/\($0.session)/\($0.index)" } }
 
   var body: some View {
     ScrollView {
@@ -44,6 +50,7 @@ struct FieldworkRoomScreen: View {
               Button { share(house.bundle(for: session), active.index, room.name) } label: {
                 Label(busy ? "Preparing room…" : "Share room", systemImage: "square.and.arrow.up")
               }.buttonStyle(FieldworkButtonStyle()).disabled(busy)
+              photorealActions(house.bundle(for: session), active.index, room.name)
               Button { onCapture(house.id, room.zone, nil, room.id) } label: {
                 Label("Continue scanning", systemImage: "viewfinder")
               }.buttonStyle(FieldworkButtonStyle(filled: false)).disabled(!CaptureController.isSupported || busy)
@@ -84,12 +91,17 @@ struct FieldworkRoomScreen: View {
       ToolbarItem(placement: .topBarTrailing) {
         Menu {
           Button("Rename room", systemImage: "pencil") { name = room?.name ?? ""; renaming = true }
+          Button("Photoreal server", systemImage: "server.rack") { configuringServer = true }
           Button("Delete room", systemImage: "trash", role: .destructive) { deleting = true }
         } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("Room options")
       }
     }
     .onAppear(perform: reload).onChange(of: generation) { _, _ in reload() }
+    // restarts for another scan, and when a new upload creates a job to follow
+    .task(id: "\(scanKey ?? "")#\(photoreal?.id ?? "")") { await followPhotoreal() }
     .sheet(item: $sharing) { ShareSheet(items: [$0]) }
+    .sheet(isPresented: $configuringServer) { PhotorealSettingsSheet() }
+    .fullScreenCover(item: $viewing) { PhotorealViewer(url: $0) }
     .alert("Rename room", isPresented: $renaming) {
       TextField("Room name", text: $name)
       Button("Save") { perform { try HouseProject.renameRoom(houseID: houseID, roomID: roomID, name: name) } }
@@ -173,6 +185,67 @@ struct FieldworkRoomScreen: View {
   }
   private func perform(_ action: () throws -> Void) {
     do { try action(); reload() } catch { self.error = error.localizedDescription }
+  }
+  @ViewBuilder private func photorealActions(_ bundle: ScanBundle, _ index: Int, _ name: String) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if let progress = uploadProgress {
+        ProgressView(value: progress) { Text("Uploading for photoreal processing…").font(.caption) }
+          .tint(Fieldwork.orange)
+      } else if let job = photoreal, !job.finished {
+        HStack(spacing: 10) {
+          ProgressView().tint(Fieldwork.orange)
+          Text(job.statusText).font(.caption).foregroundStyle(Fieldwork.secondary)
+        }.frame(minHeight: 44)
+      } else if let job = photoreal, job.state == "done", let url = PhotorealClient.viewerURL(job.id) {
+        Button { viewing = url } label: { Label("View photoreal", systemImage: "cube.transparent") }
+          .buttonStyle(FieldworkButtonStyle(filled: false))
+        if let quality = job.metrics?.quality {
+          Text("Quality: \(quality)").font(.caption).foregroundStyle(Fieldwork.secondary)
+        }
+        ForEach(job.hints ?? [], id: \.text) { hint in
+          Label(hint.text, systemImage: "camera.badge.ellipsis").font(.caption).foregroundStyle(Fieldwork.secondary)
+        }
+      } else {
+        Button { makePhotoreal(bundle, index, name) } label: { Label("Make photoreal", systemImage: "sparkles") }
+          .buttonStyle(FieldworkButtonStyle(filled: false)).disabled(busy)
+        if let job = photoreal, job.state == "failed" {
+          Text(job.error ?? "Photoreal processing failed.").font(.caption).foregroundStyle(Fieldwork.orange)
+        }
+      }
+    }
+  }
+  private func makePhotoreal(_ bundle: ScanBundle, _ index: Int, _ name: String) {
+    guard PhotorealSettings.isConfigured else { configuringServer = true; return }
+    guard let key = scanKey else { return }
+    busy = true
+    uploadProgress = 0
+    Task {
+      // Finish the upload if the app goes to the background partway through.
+      let background = UIApplication.shared.beginBackgroundTask(withName: "photoreal-upload")
+      defer { UIApplication.shared.endBackgroundTask(background) }
+      do {
+        let zip = try await Task.detached(priority: .userInitiated) { try bundle.zippedRoom(index: index, name: name) }.value
+        defer { FolderZipper.removeArchive(zip) }
+        let job = try await PhotorealClient.upload(zip: zip, room: index, name: name) { value in
+          Task { @MainActor in uploadProgress = value }
+        }
+        PhotorealJobs.set(job.id, for: key)
+        photoreal = job
+      } catch { self.error = error.localizedDescription }
+      uploadProgress = nil
+      busy = false
+    }
+  }
+  /// Show this scan's latest job and poll it until it finishes (while the screen is open).
+  private func followPhotoreal() async {
+    guard let key = scanKey, let id = PhotorealJobs.id(for: key) else { photoreal = nil; return }
+    while !Task.isCancelled {
+      if let job = try? await PhotorealClient.status(id) {
+        if scanKey == key { photoreal = job }
+        if job.finished { return }
+      }
+      try? await Task.sleep(for: .seconds(5))
+    }
   }
   private func share(_ bundle: ScanBundle, _ index: Int, _ name: String) {
     busy = true

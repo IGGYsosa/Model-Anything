@@ -33,6 +33,11 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}
+        # Make photoreal may use a job server on the local network during development (http);
+        # internet servers still need HTTPS.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: 3D Model Anything connects to your photoreal server on the local network to upload rooms and show the results.
         # camera/AR app: no iPad split view, which also means portrait-only is allowed
         UIRequiresFullScreen: true
         UIStatusBarHidden: false

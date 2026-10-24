@@ -261,7 +261,12 @@ struct CaptureScreen: View {
       }
       Toggle("High-resolution automatic photos", isOn: $controller.highResolutionPhotos)
         .font(.subheadline)
+        .disabled(controller.photorealCapture)
       Text("Regular photos use camera frames for a lighter scan. High-resolution photos add processing and are limited to one request every 3 seconds while the phone is cool. The shutter always saves a regular photo.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("Photoreal capture", isOn: $controller.photorealCapture)
+        .font(.subheadline)
+      Text("For Make photoreal: keeps only sharp photos and uses high-resolution stills. Move slowly and step sideways around the room rather than only turning in place.")
         .font(.caption).foregroundStyle(.secondary)
       Button {
         controller.startRoom()

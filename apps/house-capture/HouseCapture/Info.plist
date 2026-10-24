@@ -28,8 +28,15 @@
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>3D Model Anything uses the camera and LiDAR scanner to measure your rooms and take reference photos.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>3D Model Anything connects to your photoreal server on the local network to upload rooms and show the results.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchScreen</key>

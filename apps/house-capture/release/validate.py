@@ -21,9 +21,12 @@ else:
             errors.append(f'Missing required reason for {category}')
     if privacy.get('NSPrivacyTracking') or privacy.get('NSPrivacyCollectedDataTypes'):
         errors.append('Re-audit store privacy answers: tracking or data collection declared')
-for key in ['NSLocalNetworkUsageDescription', 'NSAppTransportSecurity']:
-    if key in info:
-        errors.append(f'Remove unused network permission/exception: {key}')
+# Make photoreal uploads to a user-configured server; only local-network HTTP is exempted.
+ats = info.get('NSAppTransportSecurity', {})
+if set(ats) - {'NSAllowsLocalNetworking'}:
+    errors.append('Review App Transport Security exceptions: ' + ', '.join(sorted(set(ats) - {'NSAllowsLocalNetworking'})))
+if ats.get('NSAllowsLocalNetworking') and not info.get('NSLocalNetworkUsageDescription'):
+    errors.append('Local networking needs NSLocalNetworkUsageDescription')
 for resource in ['Support.json', 'PrivacyPolicy.json']:
     if not (app / resource).exists(): errors.append(f'Missing offline help resource: {resource}')
 for key in ['HouseCapturePrivacyURL', 'HouseCaptureSupportURL']:
