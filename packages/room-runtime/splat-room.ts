@@ -77,7 +77,7 @@ function label(text: string, color: string) {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
-  sprite.scale.setScalar(0.22);
+  sprite.scale.setScalar(0.16);
   sprite.renderOrder = 1002;
   return sprite;
 }
@@ -99,7 +99,16 @@ async function rescanOverlay(base: URL, review: SceneReview): Promise<RescanOver
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const dots = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.02, vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false }));
+    // small round dots of constant screen size: up close, world-sized points become big squares
+    const disc = document.createElement('canvas');
+    disc.width = disc.height = 32;
+    const ctx = disc.getContext('2d')!;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(16, 16, 14, 0, Math.PI * 2); ctx.fill();
+    const dots = new THREE.Points(geometry, new THREE.PointsMaterial({
+      size: 5, sizeAttenuation: false, map: new THREE.CanvasTexture(disc), alphaTest: 0.5,
+      vertexColors: true, transparent: true, opacity: 0.75, depthWrite: false,
+    }));
     dots.name = 'weak-points';
     dots.renderOrder = 1000;
     group.add(dots);
@@ -111,7 +120,7 @@ async function rescanOverlay(base: URL, review: SceneReview): Promise<RescanOver
     const box = new THREE.BoxGeometry(size.x, size.y, size.z);
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(box),
       new THREE.LineBasicMaterial({ color, transparent: true, depthTest: false }));
-    const fill = new THREE.Mesh(box, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.12, depthWrite: false }));
+    const fill = new THREE.Mesh(box, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.07, depthWrite: false }));
     const badge = label(String(area.id), color);
     badge.position.set(0, size.y / 2 + 0.16, 0);
     const marker = new THREE.Group();
@@ -145,9 +154,9 @@ async function rescanOverlay(base: URL, review: SceneReview): Promise<RescanOver
       for (const m of markers) {
         const on = id === null || m.id === id;
         (m.edges.material as THREE.LineBasicMaterial).opacity = on ? 1 : 0.25;
-        (m.fill.material as THREE.MeshBasicMaterial).opacity = id === m.id ? 0.2 : on ? 0.12 : 0.04;
+        (m.fill.material as THREE.MeshBasicMaterial).opacity = id === m.id ? 0.16 : on ? 0.07 : 0.03;
         (m.badge.material as THREE.SpriteMaterial).opacity = on ? 1 : 0.35;
-        m.badge.scale.setScalar(id === m.id ? 0.3 : 0.22);
+        m.badge.scale.setScalar(id === m.id ? 0.22 : 0.16);
       }
     },
   };

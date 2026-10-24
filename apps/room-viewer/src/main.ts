@@ -90,10 +90,8 @@ function resolution(ratio: number) {
 // --- Rooms -----------------------------------------------------------------
 
 const walkButton = hud.querySelector<HTMLButtonElement>('[data-mode=walk]')!;
-if (!canvas.requestPointerLock) {
-  walkButton.disabled = true;
-  walkButton.title = 'Walking requires a browser with mouse pointer lock.';
-}
+// Walking needs a mouse (pointer lock); on phones and tablets the button would only be a dead end.
+if (!canvas.requestPointerLock || matchMedia('(pointer: coarse)').matches) walkButton.hidden = true;
 
 // ?scene=<scene.json URL> adds a photoreal splat room (a pipeline job's scene package).
 const statusEl = document.querySelector<HTMLOutputElement>('#viewer-status')!;
@@ -228,7 +226,11 @@ async function loadRoom(id: string, updated?: RoomModule) {
     button.disabled = (room?.referenceAvailable === false && ['scan', 'overlay'].includes(button.dataset.source ?? ''))
       || (splat && button.dataset.source === 'wireframe');
   });
-  hud.querySelector<HTMLButtonElement>('[data-mode=knolling]')!.disabled = splat;
+  // Photoreal scenes have no separate objects, materials or physics: hide what can't apply.
+  hud.querySelector<HTMLButtonElement>('[data-mode=knolling]')!.hidden = splat;
+  hud.querySelector<HTMLElement>('.source-section')!.hidden = splat;
+  hud.querySelector<HTMLElement>('.play-link')!.hidden = splat;
+  document.body.classList.toggle('splat-room', splat);
   if (splat && mode === 'knolling') setMode('orbit');
   if ((room?.referenceAvailable === false && (source === 'scan' || source === 'overlay')) || (splat && source === 'wireframe')) source = 'model';
   orbit.maxDistance = mod.id === 'house' ? 80 : 30;
