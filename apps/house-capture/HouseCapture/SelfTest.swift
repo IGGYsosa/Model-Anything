@@ -37,6 +37,46 @@ final class SelfTest {
     output(s)
   }
 
+  /// A camera at `height` m facing `yaw` radians round the room (0 = −Z), tilted `pitch` radians up.
+  private func cameraView(x: Float = 0, height: Float, yaw: Float, pitch: Float = 0) -> PhotoView {
+    let forward = SIMD3<Float>(sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
+    let back = -forward, right = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), back))
+    let up = simd_cross(back, right)
+    return PhotoView(transform: simd_float4x4(SIMD4(right, 0), SIMD4(up, 0), SIMD4(back, 0), SIMD4(x, height, 0, 1)))
+  }
+
+  private func photorealGuideChecks() {
+    let a = cameraView(height: 1.4, yaw: 0)
+    expect(PhotorealGuide.wantsPhoto(after: nil, at: a), "photoreal: first view is always shot")
+    expect(!PhotorealGuide.wantsPhoto(after: a, at: cameraView(x: 0.05, height: 1.4, yaw: 0.05)), "photoreal: small moves wait")
+    expect(PhotorealGuide.wantsPhoto(after: a, at: cameraView(x: 0.2, height: 1.4, yaw: 0)), "photoreal: 20 cm step shoots")
+    expect(PhotorealGuide.wantsPhoto(after: a, at: cameraView(height: 1.4, yaw: 0.25)), "photoreal: 14° turn shoots")
+    expect(PhotorealGuide.sector(cameraView(height: 1.4, yaw: 0).forward) != PhotorealGuide.sector(cameraView(height: 1.4, yaw: .pi).forward),
+           "photoreal: opposite walls are different directions")
+
+    var guide = PhotorealGuide()
+    expect(guide.pass == .chest, "photoreal: starts with the chest-height loop")
+    for i in 0..<16 { guide.add(cameraView(height: 1.4, yaw: Float(i) * .pi / 8)) }
+    expect(guide.chest.count == PhotorealGuide.sectors && guide.pass == .low, "photoreal: a full loop moves on to the low pass")
+    for i in 0..<16 { guide.add(cameraView(height: 0.9, yaw: Float(i) * .pi / 8)) }
+    expect(guide.low.count == PhotorealGuide.sectors && guide.pass == .ceiling, "photoreal: phone held 0.5 m lower counts as the low pass")
+    for _ in 0..<PhotorealGuide.ceilingPhotos { guide.add(cameraView(height: 1.4, yaw: 0, pitch: 1.2)) }
+    expect(guide.pass == .fill, "photoreal: after the ceiling, fill to the target")
+    for _ in guide.photos..<PhotorealGuide.target { guide.add(cameraView(height: 1.4, yaw: 0)) }
+    expect(guide.pass == .done, "photoreal: done at the target")
+
+    var light = LightMeter()
+    for _ in 0..<30 { light.add(iso: 2100, shutter: 1.0 / 60) }
+    expect(light.tooDark, "light: ISO 2100 at 1/60 s is too dark (room H)")
+    for _ in 0..<30 { light.add(iso: 900, shutter: 1.0 / 60) }
+    expect(light.tooDark, "light: stays on between the thresholds")
+    for _ in 0..<40 { light.add(iso: 300, shutter: 1.0 / 60) }
+    expect(!light.tooDark, "light: a lit room clears the warning")
+    var fast = LightMeter()
+    for _ in 0..<30 { fast.add(iso: 2000, shutter: 1.0 / 250) }
+    expect(!fast.tooDark, "light: high ISO with a fast shutter is fine")
+  }
+
   private func expect(_ ok: Bool, _ what: String) {
     if ok { passed += 1; log("ok   \(what)") } else { failed += 1; log("FAIL \(what)") }
   }
@@ -53,6 +93,9 @@ final class SelfTest {
     expect(legacy.photographedPercent == 83, "saved scans use measured coverage instead of legacy mixed percentage")
     expect(CaptureBudget(thermal: .serious, photos: 2, memoryPressure: false).depthInterval > 0.2, "warm phone reduces depth rate")
     expect(CaptureBudget(thermal: .nominal, photos: 2, memoryPressure: true).constrained, "memory pressure reduces capture work")
+    expect(!CaptureBudget(thermal: .nominal, photos: 200, memoryPressure: false, photoLimit: PhotorealGuide.maxPhotos).constrained,
+           "photoreal rooms keep full-rate capture past 150 photos")
+    photorealGuideChecks()
     var h = try HouseProject.create(name: "Experience selftest")
     defer { try? FileManager.default.removeItem(at: h.url) }
     let z = h.addZone(named: "test")

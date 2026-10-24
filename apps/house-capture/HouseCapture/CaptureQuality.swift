@@ -17,9 +17,10 @@ struct CaptureQuality {
 struct CaptureBudget {
   let constrained: Bool
   let critical: Bool
-  init(thermal: ProcessInfo.ThermalState, photos: Int, memoryPressure: Bool) {
+  /// photoLimit: photos in the room before background capture eases off (photoreal rooms need more)
+  init(thermal: ProcessInfo.ThermalState, photos: Int, memoryPressure: Bool, photoLimit: Int = 150) {
     critical = thermal == .critical
-    constrained = memoryPressure || photos >= 150 || thermal == .serious || critical
+    constrained = memoryPressure || photos >= photoLimit || thermal == .serious || critical
   }
   var depthInterval: Double { critical ? 1 : constrained ? 0.5 : 0.2 }
   var evaluationInterval: Double { constrained ? 0.3 : 0.1 }

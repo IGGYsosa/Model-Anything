@@ -55,6 +55,13 @@ struct CaptureScreen: View {
             .background(.orange.opacity(0.9), in: RoundedRectangle(cornerRadius: 10))
             .padding(.horizontal)
         }
+        if scanning, controller.photorealCapture, controller.tooDark {
+          Label(LightMeter.message, systemImage: "lightbulb.max")
+            .font(.footnote)
+            .padding(10)
+            .background(.orange.opacity(0.9), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal)
+        }
         bottomPanel
       }
       .padding(.bottom, 8)
@@ -120,6 +127,11 @@ struct CaptureScreen: View {
             }
             Text("\(controller.rooms.count) room\(controller.rooms.count == 1 ? "" : "s") · \(controller.photoCount) photos")
               .font(.caption.monospacedDigit())
+            if scanning, controller.photorealCapture {
+              Text("Photoreal: \(controller.photoreal.photos) of \(PhotorealGuide.target)")
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(controller.photoreal.photos >= PhotorealGuide.target ? Color.green : Color.orange)
+            }
             if controller.stats.rescanTotal > 0 {
               Text(controller.stats.rescanLeft == 0 ? "Weak spots rephotographed"
                    : "\(controller.stats.rescanLeft) of \(controller.stats.rescanTotal) weak spots left")
@@ -275,7 +287,7 @@ struct CaptureScreen: View {
         .font(.caption).foregroundStyle(.secondary)
       Toggle("Photoreal capture", isOn: $controller.photorealCapture)
         .font(.subheadline)
-      Text("For Make photoreal: keeps only sharp photos and uses high-resolution stills. Move slowly and step sideways around the room rather than only turning in place.")
+      Text("For Make photoreal: takes many overlapping photos (about \(PhotorealGuide.target) per room) as you move, keeps only sharp ones and uses high-resolution stills. The app walks you through three passes. Turn on all the lights first.")
         .font(.caption).foregroundStyle(.secondary)
       Button {
         controller.startRoom()
@@ -340,8 +352,13 @@ struct CaptureScreen: View {
   private var scanControls: some View {
     VStack(spacing: 10) {
       if controller.captureReady {
-        tip(controller.quality.ready ? controller.quality.message : (controller.instruction ?? controller.quality.message))
-        if controller.coveragePlateau && !controller.quality.ready {
+        if controller.photorealCapture {
+          // RoomPlan's coaching ("move closer") still comes first: the layout must be measured too
+          tip(controller.instruction ?? controller.photoreal.message)
+        } else {
+          tip(controller.quality.ready ? controller.quality.message : (controller.instruction ?? controller.quality.message))
+        }
+        if controller.coveragePlateau && !controller.quality.ready && !controller.photorealCapture {
           tip("Photo detail isn't improving much. You can save and review what you have; you don't need to keep circling.")
         }
         if controller.captureBudget.constrained { Text("Reducing background capture to keep scanning responsive.").font(.caption).foregroundStyle(.white) }
