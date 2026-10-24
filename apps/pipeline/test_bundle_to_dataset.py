@@ -44,67 +44,71 @@ def wall(center, along, length, height=2.5):
             'confidence': {'high': {}}}
 
 
+def make_bundle(bundle):
+    """Synthetic one-room session (room index 2) in a rotated, offset ARKit world; returns photos."""
+    (bundle / 'rooms').mkdir(parents=True)
+    (bundle / 'photos').mkdir()
+    (bundle / 'mesh').mkdir()
+    hx, hz = HALF
+    room = {'walls': [wall((0, -hz), (1, 0), 2 * hx), wall((hx, 0), (0, 1), 2 * hz),
+                      wall((0, hz), (-1, 0), 2 * hx), wall((-hx, 0), (0, -1), 2 * hz)],
+            'objects': [], 'doors': [], 'windows': [], 'openings': []}
+    (bundle / 'rooms/room-2.json').write_text(json.dumps(room))
+    (bundle / 'manifest.json').write_text(json.dumps({
+        'format': 'house-capture/5', 'rooms': [
+            {'index': 2, 'name': 'Patio', 'file': 'rooms/room-2.json', 'mesh': {'file': 'mesh/room-2.ply'}}]}))
+
+    # LiDAR mesh vertices on the floor and walls (room-local), plus an outside surface (inroom 0)
+    g = np.linspace(-1, 1, 21)
+    pts, nrm = [], []
+    for a in g:
+        for b in g:
+            pts.append([a * hx, 0, b * hz]); nrm.append([0, 1, 0])
+            for sgn in (-1, 1):
+                pts.append([a * hx, 1.25 + b * 1.2, sgn * hz]); nrm.append([0, 0, -sgn])
+                pts.append([sgn * hx, 1.25 + b * 1.2, a * hz]); nrm.append([-sgn, 0, 0])
+    local = np.array(pts)
+    inroom = np.ones(len(local), np.uint8)
+    outside = np.array([[x, 1.0, hz + 3] for x in np.linspace(-1, 1, 10)])
+    local = np.vstack([local, outside]); nrm = np.vstack([nrm, np.tile([0, 0, -1], (10, 1))])
+    inroom = np.concatenate([inroom, np.zeros(10, np.uint8)])
+    rot = world(np.eye(4))[:3, :3]
+    w = local @ rot.T + OFFSET
+    n = nrm @ rot.T
+    vert = np.empty(len(w), dtype=[(k, '<f4') for k in ('x', 'y', 'z', 'nx', 'ny', 'nz', 'coverage')]
+                    + [(k, 'u1') for k in ('red', 'green', 'blue', 'inroom')])
+    for i, k in enumerate('xyz'):
+        vert[k], vert['n' + k] = w[:, i], n[:, i]
+    vert['coverage'], vert['red'], vert['green'], vert['blue'], vert['inroom'] = 1, 255, 0, 0, inroom
+    header = (f'ply\nformat binary_little_endian 1.0\nelement vertex {len(w)}\n'
+              + ''.join(f'property float {k}\n' for k in ('x', 'y', 'z', 'nx', 'ny', 'nz', 'coverage'))
+              + ''.join(f'property uchar {k}\n' for k in ('red', 'green', 'blue', 'inroom'))
+              + 'element face 0\nproperty list uchar uint vertex_indices\nproperty uchar class\nend_header\n')
+    (bundle / 'mesh/room-2.ply').write_bytes(header.encode() + vert.tobytes())
+
+    # 12 photos from the middle of the room turning around; one blurry, one with lost tracking,
+    # one from another room. Every image is the same color, unlike the PLY's red heatmap.
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    photos = []
+    for i in range(13):
+        file = f'photos/{i:04d}.jpg'
+        Image.new('RGB', (160, 120), (10, 200, 30)).save(bundle / file, quality=95, exif=exif)
+        photos.append({'file': file, 'room': 2 if i < 12 else 1, 'width': 160, 'height': 120,
+                       'intrinsics': K, 'tracking': 'normal', 'blurPixels': 0.2, 'exposure': 0.01,
+                       'camera': {'iso': 100 + i, 'shutter': 0.01},
+                       'transform': cm(world(yaw(i * math.tau / 12, (0.2, 1.4, 0.1))))})
+    photos[3]['blurPixels'] = 9.0
+    photos[5]['tracking'] = 'limited:excessiveMotion'
+    (bundle / 'photos/photos.json').write_text(json.dumps(photos))
+    return photos
+
+
 class DatasetTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.bundle = Path(self.temp.name) / 'session'
-        (self.bundle / 'rooms').mkdir(parents=True)
-        (self.bundle / 'photos').mkdir()
-        (self.bundle / 'mesh').mkdir()
-        hx, hz = HALF
-        room = {'walls': [wall((0, -hz), (1, 0), 2 * hx), wall((hx, 0), (0, 1), 2 * hz),
-                          wall((0, hz), (-1, 0), 2 * hx), wall((-hx, 0), (0, -1), 2 * hz)],
-                'objects': [], 'doors': [], 'windows': [], 'openings': []}
-        (self.bundle / 'rooms/room-2.json').write_text(json.dumps(room))
-        (self.bundle / 'manifest.json').write_text(json.dumps({
-            'format': 'house-capture/5', 'rooms': [
-                {'index': 2, 'name': 'Patio', 'file': 'rooms/room-2.json', 'mesh': {'file': 'mesh/room-2.ply'}}]}))
-
-        # LiDAR mesh vertices on the floor and walls (room-local), plus an outside surface (inroom 0)
-        g = np.linspace(-1, 1, 21)
-        pts, nrm = [], []
-        for a in g:
-            for b in g:
-                pts.append([a * hx, 0, b * hz]); nrm.append([0, 1, 0])
-                for sgn in (-1, 1):
-                    pts.append([a * hx, 1.25 + b * 1.2, sgn * hz]); nrm.append([0, 0, -sgn])
-                    pts.append([sgn * hx, 1.25 + b * 1.2, a * hz]); nrm.append([-sgn, 0, 0])
-        local = np.array(pts)
-        inroom = np.ones(len(local), np.uint8)
-        outside = np.array([[x, 1.0, hz + 3] for x in np.linspace(-1, 1, 10)])
-        local = np.vstack([local, outside]); nrm = np.vstack([nrm, np.tile([0, 0, -1], (10, 1))])
-        inroom = np.concatenate([inroom, np.zeros(10, np.uint8)])
-        self.local_points = local[inroom > 0]
-        rot = world(np.eye(4))[:3, :3]
-        w = local @ rot.T + OFFSET
-        n = nrm @ rot.T
-        vert = np.empty(len(w), dtype=[(k, '<f4') for k in ('x', 'y', 'z', 'nx', 'ny', 'nz', 'coverage')]
-                        + [(k, 'u1') for k in ('red', 'green', 'blue', 'inroom')])
-        for i, k in enumerate('xyz'):
-            vert[k], vert['n' + k] = w[:, i], n[:, i]
-        vert['coverage'], vert['red'], vert['green'], vert['blue'], vert['inroom'] = 1, 255, 0, 0, inroom
-        header = (f'ply\nformat binary_little_endian 1.0\nelement vertex {len(w)}\n'
-                  + ''.join(f'property float {k}\n' for k in ('x', 'y', 'z', 'nx', 'ny', 'nz', 'coverage'))
-                  + ''.join(f'property uchar {k}\n' for k in ('red', 'green', 'blue', 'inroom'))
-                  + 'element face 0\nproperty list uchar uint vertex_indices\nproperty uchar class\nend_header\n')
-        (self.bundle / 'mesh/room-2.ply').write_bytes(header.encode() + vert.tobytes())
-
-        # 12 photos from the middle of the room turning around; one blurry, one with lost tracking,
-        # one from another room. Every image is the same color, unlike the PLY's red heatmap.
-        exif = Image.Exif()
-        exif[0x0112] = 6
-        photos = []
-        for i in range(13):
-            file = f'photos/{i:04d}.jpg'
-            Image.new('RGB', (160, 120), (10, 200, 30)).save(self.bundle / file, quality=95, exif=exif)
-            photos.append({'file': file, 'room': 2 if i < 12 else 1, 'width': 160, 'height': 120,
-                           'intrinsics': K, 'tracking': 'normal', 'blurPixels': 0.2, 'exposure': 0.01,
-                           'camera': {'iso': 100 + i, 'shutter': 0.01},
-                           'transform': cm(world(yaw(i * math.tau / 12, (0.2, 1.4, 0.1))))})
-        photos[3]['blurPixels'] = 9.0
-        photos[5]['tracking'] = 'limited:excessiveMotion'
-        (self.bundle / 'photos/photos.json').write_text(json.dumps(photos))
-        self.photos = photos
+        self.photos = make_bundle(self.bundle)
         self.out = Path(self.temp.name) / 'dataset'
         self.meta = build(self.bundle, self.out, text=True)
 

@@ -292,7 +292,7 @@ def main():
     m = build(a.bundle, a.out, a.room, a.max_blur, a.voxel, a.max_points, text=a.text)
     held = sum(i['heldOut'] for i in m['images'])
     print(f'room {m["room"]} {m["roomName"] or ""}: {len(m["images"])} photos ({held} held out), '
-          f'{len(m["skipped"])} skipped, {m["points"]} seed points → {a.out}')
+          f'{len(m["skipped"])} skipped, {m["points"]} seed points -> {a.out}')
 
 
 if __name__ == '__main__':

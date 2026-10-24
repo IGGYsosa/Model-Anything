@@ -1,0 +1,5 @@
+**
+!apps/pipeline/**
+!.agents/skills/scan-to-threejs/scripts/**
+**/__pycache__
+apps/pipeline/Dockerfile*
