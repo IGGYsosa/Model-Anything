@@ -83,6 +83,12 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
       if photorealCapture { highResolutionPhotos = true }
     }
   }
+  /// this room's photoreal passes (counted for every photo; shown when photoreal capture is on)
+  @Published private(set) var photoreal = PhotorealGuide()
+  /// the room is too dim for sharp photos (published only when it changes)
+  @Published private(set) var tooDark = false
+  private var lightMeter = LightMeter()
+  private var lastLightCheck: TimeInterval = 0
   @Published private(set) var trackingIssue: TrackingRecovery.Issue? = .starting
   @Published private(set) var sessionNeedsRestart = false
   @Published private(set) var recordingSaveFailed = false
@@ -665,7 +671,10 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
     return !paused && captureReady && stats.percent >= 65 && Date().timeIntervalSince(started) > 120 && Date().timeIntervalSince(lastCoverageProgress) > 45
   }
   private var memoryPressureUntil: TimeInterval = 0
-  var captureBudget: CaptureBudget { CaptureBudget(thermal: ProcessInfo.processInfo.thermalState, photos: roomPhotoCount, memoryPressure: CACurrentMediaTime() < memoryPressureUntil) }
+  var captureBudget: CaptureBudget {
+    CaptureBudget(thermal: ProcessInfo.processInfo.thermalState, photos: roomPhotoCount, memoryPressure: CACurrentMediaTime() < memoryPressureUntil,
+                  photoLimit: photorealCapture ? PhotorealGuide.maxPhotos : 150)
+  }
   var quality: CaptureQuality { CaptureQuality(percent: stats.percent, walls: coverage.walls.count, photos: roomPhotoCount) }
   var recoveryPhoto: URL? { photos.last.map { bundle.file($0.file) } }
   var reviewSource: PreviewSource? {
@@ -703,6 +712,7 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
     lastCoverageProgress = Date()
     lastProgressPercent = 0
     roomPhotoCount = 0
+    photoreal = PhotorealGuide()
     hint = .none
     engine.setRoom(nil)
     scanView.showRoom(nil)
@@ -1345,7 +1355,13 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
     }
     guard !paused, captureReady else { return }
     let budget = captureBudget
-    depthRecorder.consider(frame, room: roomIndex, camera: cameraControl.state(for: frame), interval: budget.depthInterval)
+    let cameraState = cameraControl.state(for: frame)
+    depthRecorder.consider(frame, room: roomIndex, camera: cameraState, interval: budget.depthInterval)
+    if frame.timestamp - lastLightCheck > 0.5 {
+      lastLightCheck = frame.timestamp
+      lightMeter.add(iso: cameraState.iso, shutter: cameraState.shutter ?? frame.camera.exposureDuration)
+      if lightMeter.tooDark != tooDark { tooDark = lightMeter.tooDark }
+    }
     if frame.timestamp - lastEvaluate > budget.evaluationInterval {
       lastEvaluate = frame.timestamp
       engine.evaluate(view: Self.enginePhoto(frame: frame, sharpness: 1, depth: nil, room: roomIndex))
@@ -1390,6 +1406,12 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
     let view = PhotoView(transform: frame.camera.transform)
     if resolveCandidate(frame: frame, view: view) { return }
     guard frame.timestamp - lastPhotoTime > captureBudget.photoInterval, blur <= photoBlurLimit else { return }
+    if photorealCapture {
+      // a splat needs overlap, not just coverage: shoot on movement, whatever the view adds
+      guard PhotorealGuide.wantsPhoto(after: photoViews.last(where: { $0.room == roomIndex })?.view, at: view) else { return }
+      hold(frame, blur: blur)
+      return
+    }
     let recent = photoViews.suffix(8)
     guard recent.allSatisfy({ simd_distance($0.view.position, view.position) > 0.12 || simd_dot($0.view.forward, view.forward) < cos(Float.pi / 18) }) else { return }
     if stats.meshArea > 0.5 || stats.targetsCovered > 0 || liveRoom != nil {
@@ -1551,6 +1573,7 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
           self.engine.add(enginePhoto)
           self.photoCount = self.photos.count
           self.roomPhotoCount += 1
+          if record.room == self.roomIndex { self.photoreal.add(view) }
           self.refreshCoverage()
         } else {
           self.lastWarning = "A photo could not be saved. Check available storage before continuing."

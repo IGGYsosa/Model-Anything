@@ -108,6 +108,49 @@ def make_bundle(bundle, size=(160, 120), focal=100, count=13):
     return photos
 
 
+CEILING = 2.5
+TILT_UP = np.array([[1, 0, 0, 0], [0, math.cos(0.5), -math.sin(0.5), 0], [0, math.sin(0.5), math.cos(0.5), 0], [0, 0, 0, 1]])
+
+
+def room_depth(c2w_local, k, w, h):
+    """OpenCV depth of the box room (floor, ceiling, four walls) seen from a room-local ARKit pose"""
+    fx, fy, cx, cy = k
+    v, u = np.mgrid[0:h, 0:w] + 0.5
+    rays = np.stack([(u - cx) / fx, -(v - cy) / fy, -np.ones_like(u)], -1) @ c2w_local[:3, :3].T  # ARKit axes
+    o = c2w_local[:3, 3]
+    t = np.full((h, w), np.inf)
+    for axis, plane in ((1, 0.0), (1, CEILING), (0, -HALF[0]), (0, HALF[0]), (2, -HALF[1]), (2, HALF[1])):
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ti = (plane - o[axis]) / rays[..., axis]
+        t = np.where((ti > 0) & (ti < t), ti, t)
+    return t  # the rays have camera z = -1, so t is the depth
+
+
+def add_depth_frames(bundle, count=6):
+    """LiDAR depth frames (room 2) with 64×48 color images, the camera turning slowly from the room's
+    middle, tilted up; then one frame after a fast 90° turn, which should be skipped as blurred."""
+    (bundle / 'depth').mkdir()
+    dw, dh, kd = 128, 96, (80.0, 80.0, 64.0, 48.0)
+    frames = []
+    for i in range(count + 1):
+        phi = 0.03 * i if i < count else 0.03 * count + math.radians(90)
+        local = yaw(phi, (0.2, 1.4, 0.1)) @ TILT_UP  # sees the ceiling, which the mesh leaves out
+        depth = room_depth(local, kd, dw, dh)
+        name = f'{i:05d}'
+        import zlib
+        z = zlib.compressobj(wbits=-15)
+        (bundle / f'depth/{name}.f16z').write_bytes(z.compress(depth.astype('<f2').tobytes()) + z.flush())
+        (bundle / f'depth/{name}.conf').write_bytes(np.full((dh, dw), 2, np.uint8).tobytes())
+        Image.new('RGB', (64, 48), (220, 40, 120)).save(bundle / f'depth/{name}.jpg', quality=95)
+        frames.append({'file': f'depth/{name}.f16z', 'confidence': f'depth/{name}.conf', 'rgb': f'depth/{name}.jpg',
+                       'room': 2, 'timestamp': 100 + 0.2 * i, 'width': dw, 'height': dh,
+                       'intrinsics': [kd[0], 0, 0, 0, kd[1], 0, kd[2], kd[3], 1],
+                       'rgbIntrinsics': [40, 0, 0, 0, 40, 0, 32, 24, 1],
+                       'camera': {'iso': 200, 'shutter': 1 / 60}, 'transform': cm(world(local))})
+    (bundle / 'depth/frames.json').write_text(json.dumps(frames))
+    return frames
+
+
 class DatasetTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -198,6 +241,47 @@ class DatasetTests(unittest.TestCase):
         self.assertIsNone(copy.getexif().get(0x0112))
         self.assertEqual(copy.size, (160, 120))
         self.assertTrue(np.array_equal(np.asarray(original), np.asarray(copy)))
+
+
+class DepthFrameTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.bundle = Path(self.temp.name) / 'session'
+        make_bundle(self.bundle)
+        add_depth_frames(self.bundle)
+        self.out = Path(self.temp.name) / 'dataset'
+        self.meta = build(self.bundle, self.out, binary=False)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_sharp_frames_train_and_never_score(self):
+        frames = [i for i in self.meta['images'] if i['depthFrame']]
+        self.assertEqual([f['name'] for f in frames], [f'f{i:05d}.jpg' for i in range(6)])
+        self.assertFalse(any(f['heldOut'] for f in frames))
+        self.assertEqual(frames[0]['size'], [64, 48])
+        self.assertTrue((self.out / 'images/f00000.jpg').is_file())
+        self.assertIn({'file': 'depth/00006.jpg', 'reason': self.meta['skipped'][-1]['reason']}, self.meta['skipped'])
+        self.assertIn('depth frame', self.meta['skipped'][-1]['reason'])
+        held = (self.out / 'test_images.txt').read_text().split()
+        self.assertEqual(held, [i['name'] for i in self.meta['images'] if i['heldOut']])
+        self.assertEqual(held, ['0000.jpg', '0008.jpg'])
+
+    def test_depth_samples_lie_on_the_room_with_inward_normals(self):
+        from plyio import read_vertices
+        v = read_vertices(self.out / 'points3D.ply')
+        xyz = np.stack([v['x'], v['y'], v['z']], 1)
+        n = np.stack([v['nx'], v['ny'], v['nz']], 1)
+        plain = build(self.bundle, Path(self.temp.name) / 'photos-only', binary=False, use_frames=False)
+        self.assertGreater(len(xyz), plain['points'])  # depth adds points: the ceiling has no mesh at all
+        ceiling = np.abs(xyz[:, 1] - CEILING) < 0.01
+        self.assertGreater(ceiling.sum(), 20)
+        self.assertTrue(np.all(n[ceiling, 1] < -0.9))  # facing down into the room, within 25° (float16 depth)
+        # every point is on a surface of the box
+        gap = np.min(np.stack([np.abs(xyz[:, 1]), np.abs(xyz[:, 1] - CEILING), np.abs(np.abs(xyz[:, 0]) - HALF[0]),
+                               np.abs(np.abs(xyz[:, 2]) - HALF[1])]), 0)
+        self.assertLess(gap.max(), 0.02)  # float16 depth: ~2 mm steps at 3 m, more at grazing angles
+        self.assertFalse(any(i['depthFrame'] for i in plain['images']))
         data = (self.bundle / 'photos/0004.jpg').read_bytes()
         self.assertEqual(strip_exif(strip_exif(data)), strip_exif(data))
 

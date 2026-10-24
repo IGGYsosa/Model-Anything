@@ -31,15 +31,18 @@ if '--help' in argv:
     print('--save-ply, --no-save-ply  --disable-viewer, --no-disable-viewer  --disable-video, --no-disable-video '
           '--antialiased, --no-antialiased '
           '--depth-loss, --no-depth-loss --use-bilateral-grid, --no-use-bilateral-grid --pose-opt, --no-pose-opt '
-          '--normalize-world-space, --no-normalize-world-space')
+          '--normalize-world-space, --no-normalize-world-space --strategy.cap-max INT --ply-steps [INT [INT ...]]')
     sys.exit(0)
 arg = lambda name: argv[argv.index(name) + 1]
 Path(os.environ['ARGS_OUT']).write_text(json.dumps(argv))
 result, steps, data = Path(arg('--result_dir')), int(arg('--max_steps')), Path(arg('--data_dir'))
 for d in ('stats', 'ply', 'renders'):
     (result / d).mkdir(parents=True, exist_ok=True)
-(result / 'stats' / f'val_step{steps - 1:04d}.json').write_text(json.dumps({'psnr': 27.5, 'ssim': 0.9, 'lpips': 0.1, 'num_GS': 1000}))
 xyz, rgb, scale = synthetic_room(0.2)
+if os.environ.get('FAKE_STOP'):  # dies after its first snapshot, before evaluating
+    write_splat(result / 'ply' / 'point_cloud_6999.ply', xyz, rgb, scale)
+    sys.exit(3)
+(result / 'stats' / f'val_step{steps - 1:04d}.json').write_text(json.dumps({'psnr': 27.5, 'ssim': 0.9, 'lpips': 0.1, 'num_GS': 1000}))
 write_splat(result / 'ply' / f'point_cloud_{steps - 1}.ply', xyz, rgb, scale)
 rng = np.random.default_rng(1)
 images = sorted((data / 'images').glob('*.jpg'))
@@ -86,7 +89,9 @@ class JobTests(unittest.TestCase):
         self.assertEqual(args[0], 'mcmc')
         for flag in ('--save-ply', '--disable-video', '--antialiased', '--depth-loss', '--use-bilateral-grid', '--no-normalize-world-space'):
             self.assertIn(flag, args)
-        self.assertNotIn('--pose-opt', args)
+        self.assertIn('--pose-opt', args)  # ARKit drift: refined indoors too
+        self.assertEqual(args[args.index('--strategy.cap-max') + 1], '500000')
+        self.assertEqual(args[args.index('--ply-steps') + 1:][:1], ['100'])
         scene = json.loads((job / 'scene/scene.json').read_text())
         self.assertEqual(scene['format'], 'model-anything-scene/1')
         self.assertEqual(scene['name'], 'Patio')
@@ -119,6 +124,33 @@ class JobTests(unittest.TestCase):
         self.assertEqual(data['worldToRoom'], scene['worldToRoom'])
         self.assertEqual(data['hints'][0]['min'], review['areas'][0]['min'])
         self.assertEqual(scene['hints'], [a['text'] for a in review['areas']])
+
+    def test_snapshots_before_the_end(self):
+        self.assertEqual(run_job.snapshots(30_000), [7_000, 15_000, 30_000])
+        self.assertEqual(run_job.snapshots(10_000), [7_000, 10_000])
+
+    def test_packages_the_last_snapshot_when_training_dies(self):
+        os.environ['FAKE_STOP'] = '1'
+        try:
+            data = run_job.run(self.zip, self.base / 'job', steps=30_000)
+        finally:
+            del os.environ['FAKE_STOP']
+        self.assertEqual(data['state'], 'done')
+        self.assertEqual(data['trainingStopped'], 'exit 3 after step 7000')
+        self.assertEqual(data['metrics'], {})
+        scene = json.loads((self.base / 'job/scene/scene.json').read_text())
+        self.assertEqual(scene['review']['views'], [])
+
+    def test_resume_scores_the_finished_checkpoint(self):
+        ckpt = self.base / 'job/train/ckpts/ckpt_99_rank0.pt'
+        ckpt.parent.mkdir(parents=True)
+        ckpt.write_bytes(b'')
+        run_job.run(self.zip, self.base / 'job', steps=100, resume=True)
+        args = json.loads(self.args_out.read_text())
+        self.assertEqual(args[args.index('--ckpt') + 1], str(ckpt))
+        # without --resume, an old checkpoint is never reused
+        run_job.run(self.zip, self.base / 'job', steps=100)
+        self.assertNotIn('--ckpt', json.loads(self.args_out.read_text()))
 
     def test_exterior_preset_refines_poses(self):
         run_job.run(self.zip, self.base / 'job', preset='exterior', steps=10)

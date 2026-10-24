@@ -1,7 +1,6 @@
 name: Deploy viewer
+# manual only: Actions minutes are billed (run it from the Actions tab to redeploy the viewer)
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
