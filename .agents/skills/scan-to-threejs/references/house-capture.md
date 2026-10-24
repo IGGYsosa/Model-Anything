@@ -223,3 +223,12 @@ baseline; do not label them a detailed reconstruction. Preserve the original PLY
 The capture scripts use the server at `CAP_URL`. If it is a production preview, rebuild **after**
 copying new public assets; otherwise the server may return index.html for a missing GLB. Check
 asset response content type and browser errors when the capture-ready signal never arrives.
+
+## Photoreal splats from the same bundle
+
+When the goal is a faithful appearance rather than an editable model, `apps/pipeline/bundle_to_dataset.py`
+turns one room of a session into a Gaussian-splat training set (COLMAP model from the recorded poses,
+LiDAR seed points with visibility tracks, held-out split) in the same room coordinates as
+`bundle_to_room.py`. `apps/pipeline/run_job.py` trains, scores and packages it for the viewer
+(`?scene=`). See `apps/pipeline/README.md`. A splat is evidence of appearance, not measured geometry:
+keep using RoomPlan and the LiDAR mesh for dimensions.

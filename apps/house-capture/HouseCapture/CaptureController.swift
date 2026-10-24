@@ -74,7 +74,15 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
   @Published private(set) var rooms: [RoomRecord] = []
   @Published private(set) var photoCount = 0
   private let autoPhotos = true
-  @Published var highResolutionPhotos = false
+  @Published var highResolutionPhotos = UserDefaults.standard.bool(forKey: "photorealCapture")
+  /// For photoreal (Gaussian splat) processing: full-resolution stills and only sharp frames.
+  /// Remembered between scans.
+  @Published var photorealCapture = UserDefaults.standard.bool(forKey: "photorealCapture") {
+    didSet {
+      UserDefaults.standard.set(photorealCapture, forKey: "photorealCapture")
+      if photorealCapture { highResolutionPhotos = true }
+    }
+  }
   @Published private(set) var trackingIssue: TrackingRecovery.Issue? = .starting
   @Published private(set) var sessionNeedsRestart = false
   @Published private(set) var recordingSaveFailed = false
@@ -284,8 +292,16 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
       try? bundle.delete()
       throw error
     }
-    return CaptureController(house: house, plan: plan, bundle: bundle, alignment: alignment)
+    let controller = CaptureController(house: house, plan: plan, bundle: bundle, alignment: alignment)
+    if let request = RescanRequest.pending, request.houseID == houseID { controller.rescan = request }
+    RescanRequest.pending = nil
+    return controller
   }
+
+  /// photoreal weak areas to show red once relocalized ("Rescan weak spots" on the room screen)
+  private var rescan: RescanRequest?
+  /// asked for, but not shown yet (the phone hasn't recognized the room, or can't place them)
+  var rescanWaiting: Bool { rescan != nil && stats.rescanTotal == 0 }
 
   private var roomIndex: Int { rooms.count } // the room being scanned
 
@@ -615,6 +631,11 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
     priorPhotoCount = photos.count
     engine.add(contentsOf: photos)
     diagnostics.log("coverage: \(photos.count) earlier photos", since: startedAt)
+    if let rescan, let boxes = rescan.boxes(in: house, zone: plan.zoneID) {
+      engine.setRescan(boxes)
+      diagnostics.log("rescan: \(boxes.count) weak areas from session \(rescan.sessionID)", since: startedAt)
+      show(notice: "\(boxes.count) weak spot\(boxes.count == 1 ? " is" : "s are") marked red. Photograph \(boxes.count == 1 ? "it" : "them") until \(boxes.count == 1 ? "it turns" : "they turn") green.")
+    }
   }
 
   private func saveAlignment() {
@@ -1368,7 +1389,7 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
     guard autoPhotos, photosInFlight == 0, !highResInFlight, case .normal = frame.camera.trackingState else { return }
     let view = PhotoView(transform: frame.camera.transform)
     if resolveCandidate(frame: frame, view: view) { return }
-    guard frame.timestamp - lastPhotoTime > captureBudget.photoInterval, blur <= Self.acceptableBlur else { return }
+    guard frame.timestamp - lastPhotoTime > captureBudget.photoInterval, blur <= photoBlurLimit else { return }
     let recent = photoViews.suffix(8)
     guard recent.allSatisfy({ simd_distance($0.view.position, view.position) > 0.12 || simd_dot($0.view.forward, view.forward) < cos(Float.pi / 18) }) else { return }
     if stats.meshArea > 0.5 || stats.targetsCovered > 0 || liveRoom != nil {
@@ -1407,7 +1428,7 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
   private func commitCandidate(allowHighResolution: Bool = true) {
     guard let held = candidate else { return }
     candidate = nil
-    guard held.blur <= Self.acceptableBlur else { return }
+    guard held.blur <= photoBlurLimit else { return }
     guard !captureBudget.constrained, allowHighResolution, highResolutionPhotos, highResSupported, !highResInFlight,
           captureReady, phase == .scanning,
           ProcessInfo.processInfo.thermalState == .nominal,
@@ -1463,6 +1484,10 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
   /// Under ~1.5 px of smear (at 1920 wide) is effectively sharp; up to 6 px is still usable.
   nonisolated private static let sharpBlur: Float = 1.5
   nonisolated private static let acceptableBlur: Float = 6
+  /// Splat training smears whatever blur it is given across every view, so photoreal capture
+  /// waits for sharper frames.
+  nonisolated private static let photorealBlur: Float = 3
+  private var photoBlurLimit: Float { photorealCapture ? Self.photorealBlur : Self.acceptableBlur }
   /// m² of not-yet-covered surface a photo must add
   private static let minimumGain: Float = 0.06
   /// long edge of saved photos; full-res stills are scaled down to this

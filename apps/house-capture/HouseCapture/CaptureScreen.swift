@@ -120,6 +120,15 @@ struct CaptureScreen: View {
             }
             Text("\(controller.rooms.count) room\(controller.rooms.count == 1 ? "" : "s") · \(controller.photoCount) photos")
               .font(.caption.monospacedDigit())
+            if controller.stats.rescanTotal > 0 {
+              Text(controller.stats.rescanLeft == 0 ? "Weak spots rephotographed"
+                   : "\(controller.stats.rescanLeft) of \(controller.stats.rescanTotal) weak spots left")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(controller.stats.rescanLeft == 0 ? Color.green : Color.orange)
+            } else if controller.rescanWaiting {
+              Text("Weak spots show once the phone recognizes the room")
+                .font(.caption2).foregroundStyle(.secondary)
+            }
             if controller.phase != .relocalizing {
               HStack(spacing: 6) {
                 AlignmentBadge(alignment: controller.alignment)
@@ -261,7 +270,12 @@ struct CaptureScreen: View {
       }
       Toggle("High-resolution automatic photos", isOn: $controller.highResolutionPhotos)
         .font(.subheadline)
+        .disabled(controller.photorealCapture)
       Text("Regular photos use camera frames for a lighter scan. High-resolution photos add processing and are limited to one request every 3 seconds while the phone is cool. The shutter always saves a regular photo.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("Photoreal capture", isOn: $controller.photorealCapture)
+        .font(.subheadline)
+      Text("For Make photoreal: keeps only sharp photos and uses high-resolution stills. Move slowly and step sideways around the room rather than only turning in place.")
         .font(.caption).foregroundStyle(.secondary)
       Button {
         controller.startRoom()

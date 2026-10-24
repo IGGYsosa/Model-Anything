@@ -1,0 +1,23 @@
+# Local GPU job server:  MA_TOKEN=<secret> docker compose -f apps/pipeline/compose.yaml up --build
+# Build the viewer first with  VIEWER_BASE=/viewer/ npm run build  so /view/<job> works.
+services:
+  pipeline:
+    build:
+      context: ../..
+      dockerfile: apps/pipeline/Dockerfile
+    image: model-anything-pipeline
+    ports:
+      - "8787:8787"
+    environment:
+      MA_TOKEN: ${MA_TOKEN:?set MA_TOKEN to the bearer token the app will send}
+    volumes:
+      - ../../data/jobs:/data/jobs
+      - ../room-viewer/dist:/app/apps/room-viewer/dist:ro
+    shm_size: 8gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

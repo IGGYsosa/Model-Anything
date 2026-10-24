@@ -16,7 +16,7 @@
     },
     {
       "title": "Sharing and Files",
-      "body": "Nothing is shared automatically. When you use Share, iOS sends the exported ZIP to the app, service, device, or person you choose. Exports may contain reference photos and other recorded scan data, including technical diagnostics in session or whole-house exports. A room mesh can include nearby surfaces recorded during the same session. Review the destination before sharing. Copies you share or save elsewhere are controlled by that destination and are not removed when you delete the original."
+      "body": "Nothing is shared automatically. When you use Share, iOS sends the exported ZIP to the app, service, device, or person you choose. Exports may contain reference photos and other recorded scan data, including technical diagnostics in session or whole-house exports. A room mesh can include nearby surfaces recorded during the same session. Review the destination before sharing. Make photoreal uploads the same kind of room export to the photoreal server address you enter in the app, which processes it into a 3D scene; that server and its copies are controlled by whoever operates it. Copies you share or save elsewhere are controlled by that destination and are not removed when you delete the original."
     },
     {
       "title": "Storage, backups and deletion",

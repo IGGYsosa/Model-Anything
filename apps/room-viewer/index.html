@@ -37,6 +37,14 @@
             <button data-source="wireframe" aria-pressed="false">Wireframe</button>
           </div>
         </section>
+        <section class="control-section" id="rescan" hidden aria-label="Rescan guidance">
+          <h2>Rescan <span class="section-note" id="rescan-summary"></span></h2>
+          <p class="rescan-intro">Spots to photograph again. Pick one to see where to stand.</p>
+          <div class="rescan-list"></div>
+          <button type="button" class="rescan-more" hidden></button>
+          <label class="rescan-toggle"><input type="checkbox" id="rescan-show"> Show all weak spots in the scene</label>
+          <p class="rescan-legend"><span class="inaccurate">Blurry or smeared</span><span class="few-photos">Too few photos</span></p>
+        </section>
         <section class="control-section" id="navigation" aria-label="Camera views">
           <h2>Camera</h2>
           <div class="camera-grid">
@@ -46,15 +54,14 @@
             <button data-view="side" title="Side view (4)">Side</button>
           </div>
           <div class="zoom-control"><span>Zoom</span><button data-zoom="out" aria-label="Zoom out" title="Zoom out (−)">−</button><button data-zoom="in" aria-label="Zoom in" title="Zoom in (+)">+</button></div>
-          <div class="camera-location">
-            <h3>Camera location</h3>
-            <output id="camera-coordinates"></output>
-            <label for="camera-link">Link to this view</label>
-            <input id="camera-link" type="text" readonly spellcheck="false" aria-label="Link to restore this camera view">
+          <details class="camera-location">
+            <summary>Share this view</summary>
             <button id="copy-camera-link" type="button">Copy view link</button>
             <span id="camera-copy-status" role="status"></span>
-            <p class="help">Save this link to return to the same position and angle.</p>
-          </div>
+            <label for="camera-link">Link to this view</label>
+            <input id="camera-link" type="text" readonly spellcheck="false" aria-label="Link to restore this camera view">
+            <output id="camera-coordinates"></output>
+          </details>
         </section>
         <section class="control-section quality-section">
           <label class="quality-control" for="quality">Render quality</label>

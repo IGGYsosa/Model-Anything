@@ -7,9 +7,9 @@ Before upload:
 - Add a real public support contact to the support page. Publish release/site on the chosen domain.
 - Set copyright, pricing, reviewer contact and the final store name in App Store Connect.
 - Confirm Apple Developer membership, current agreements, and distribution signing.
-- Create an iOS app record for com.wesbos.housecapture; disable Mac availability for this iOS-first release.
+- Create an iOS app record for com.iggysosa.modelanything (this fork's bundle ID); disable Mac availability for this iOS-first release.
 - Complete Apple's current age-rating and export-compliance questionnaires. The app uses no custom encryption; ITSAppUsesNonExemptEncryption is false.
-- Confirm the final privacy answers. This build has no developer data collection or tracking.
+- Confirm the final privacy answers. Make photoreal uploads a room's photos, LiDAR mesh and layout to a server the user configures; if you operate that server for users, this is data collection: update the privacy policy, store answers and the in-app wording first.
 - Increment CURRENT_PROJECT_VERSION for each uploaded build.
 - Run xcodegen, Release archive, release/validate.py <archive app path>, then Xcode Organizer Validate App.
 - Export/upload through Xcode Organizer to App Store Connect and distribute in TestFlight.
@@ -29,5 +29,6 @@ Physical-device acceptance (not replaced by simulator self-tests):
 [ ] Room versions: switch, export, soft-delete, restore, permanent deletion.
 [ ] VoiceOver, largest text size, long room names, empty library.
 [ ] Privacy/support public URLs open, display correct contact, and match the app's behavior.
+[ ] Make photoreal: configure server, upload over Wi-Fi and cellular, background mid-upload, job progress, failure message, View photoreal in the web view (orbit, pinch, layout).
 
 Public release must wait until these manual checks and App Store validation are complete.

@@ -14,7 +14,7 @@ Validated locally:
 
 ## iPhone distribution
 
-The app's display name is **3D Model Anything**. `house-capture/5`, existing serialized keys, the Xcode target and `com.wesbos.housecapture` bundle identifier remain unchanged for compatibility. Contributors select their own signing team in Xcode.
+The app's display name is **3D Model Anything**. `house-capture/5`, existing serialized keys and the Xcode target remain unchanged for compatibility. This fork signs as `com.iggysosa.modelanything` (upstream used `com.wesbos.housecapture`) and builds TestFlight releases with `.github/workflows/ios-testflight.yml`.
 
 Source publication does not submit the app to Apple. Before TestFlight/App Store release:
 - Verify the configured public privacy/support URLs and GitHub Issues support link.

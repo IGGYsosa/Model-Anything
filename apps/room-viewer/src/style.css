@@ -25,6 +25,7 @@ h2 { display: flex; align-items: center; justify-content: space-between; margin:
 .room-list button.active::before { background: #c2d7a9; border-color: #c2d7a9; }
 .mode-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
 .mode-grid button { background: #ffffff04; border-color: #ffffff10; padding: 9px 4px; }
+.splat-room .mode-grid { grid-template-columns: repeat(3, 1fr); }
 .mode-grid button.active { background: #c2d7a91a; border-color: #c2d7a94d; color: #dce9cf; }
 .segmented { grid-template-columns: repeat(4, 1fr); padding: 3px; border: 1px solid #ffffff0e; border-radius: 8px; background: #111613; gap: 2px; }
 .segmented button { min-height: 30px; font-size: 11px; padding: 4px; color: #93a097; }
@@ -82,7 +83,7 @@ body.layout-mode .quality-section, body.knolling-mode .quality-section { display
   .control-section { padding: 14px 0; }
   .room-list { grid-template-columns: 1fr 1fr; max-height: none; }
   button { min-height: 40px; }
-  .mode-grid { grid-template-columns: repeat(4, 1fr); }
+  .mode-grid { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 1fr; }
   .mode-grid button { font-size: 11px; }
   #layout { padding: 16px; gap: 8px; }
   #layout h1 { font-size: 18px; }
@@ -92,11 +93,37 @@ body.layout-mode .quality-section, body.knolling-mode .quality-section { display
 }
 @media (prefers-reduced-motion: reduce) { #loader, #loader .fill { transition: none; } }
 
-.camera-location { margin-top: 16px; }
-.camera-location h3, .camera-location label { display: block; font-size: 11px; color: #b7c2ba; margin: 8px 0; }
-#camera-coordinates { display: block; white-space: pre-line; font: 11px/1.7 monospace; color: #e2e9e3; }
+.camera-location { margin-top: 14px; }
+.camera-location summary { cursor: pointer; font-size: 11px; color: #9da8a1; padding: 6px 0; list-style-position: inside; }
+.camera-location summary:hover { color: #dce9cf; }
+.camera-location label { display: block; font-size: 10px; color: #8d9c92; margin: 10px 0 6px; }
+#camera-coordinates { display: block; margin-top: 8px; white-space: pre-line; font: 10px/1.7 monospace; color: #8d9c92; }
 #camera-link { box-sizing: border-box; width: 100%; min-width: 0; padding: 7px; border: 1px solid #ffffff26; border-radius: 5px; background: #ffffff08; color: #b7c2ba; font-size: 11px; }
 #copy-camera-link { width: 100%; margin-top: 6px; }
 #camera-copy-status { display: block; font-size: 11px; margin-top: 5px; }
 
 
+
+/* Rescan guidance for photoreal scenes */
+.rescan-intro { margin: -4px 0 10px; font-size: 11px; line-height: 1.5; color: #8d9c92; }
+.rescan-toggle { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; color: #9da8a1; min-height: 32px; }
+.rescan-toggle input { accent-color: #c2d7a9; width: 16px; height: 16px; }
+.rescan-legend { display: flex; gap: 14px; margin: 2px 0 0; font-size: 10px; color: #75837a; }
+.rescan-more { width: 100%; min-height: 30px; margin-top: 4px; font-size: 11px; color: #9da8a1; border-color: #ffffff10; }
+.rescan-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.rescan-legend .inaccurate::before { background: #ff5a4f; }
+.rescan-legend .few-photos::before { background: #f2b33d; }
+.rescan-list { display: grid; gap: 4px; }
+.rescan-list button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 6px 8px; border-color: #ffffff10; background: #ffffff04; }
+.rescan-list button[aria-expanded=true] { border-color: var(--marker); background: #ffffff0d; }
+.rescan-badge { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--marker); color: #1a1a1a; font-size: 11px; font-weight: 700; }
+.rescan-label { display: grid; gap: 1px; }
+.rescan-label strong { font-size: 12px; font-weight: 600; color: #dfe7e1; }
+.rescan-label small { font-size: 10px; color: #8d9c92; }
+.rescan-detail { margin: 2px 0 6px; padding: 10px; border: 1px solid #ffffff12; border-radius: 8px; background: #111613; }
+.rescan-detail p { margin: 0; font-size: 11px; line-height: 1.6; color: #c4cec7; }
+.rescan-detail .help { margin-top: 8px; line-height: 1.6; }
+.rescan-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+.rescan-compare figure { margin: 0; }
+.rescan-compare img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 4px; background: #222; }
+.rescan-compare figcaption { margin-top: 4px; font-size: 10px; color: #8d9c92; }

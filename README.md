@@ -48,6 +48,16 @@ Start with [the format guide](.agents/skills/scan-to-threejs/references/house-ca
 
 A new room goes in `demos/<id>/` and is registered in `demos/index.ts`. The office example retains its earlier reconstruction layers (`office-v2`, `office-latest`, `office-v4`) to preserve the final geometry.
 
+## Make a photoreal scene
+
+For a faithful, photoreal result without modeling, train a Gaussian splat from the same export. The [photoreal pipeline](apps/pipeline/README.md) uses the app's photos as training views and its LiDAR for geometry, keeps the result aligned with the RoomPlan layout, and scores it against held-out photos:
+
+```sh
+python apps/pipeline/run_job.py my-room.zip -o data/jobs/my-room
+```
+
+Open the result in the viewer with `?scene=/jobs/my-room/scene/scene.json`. The dollhouse, top, walk and layout views work on splats too. Training needs an NVIDIA GPU; `apps/pipeline/compose.yaml` runs the job server in Docker. The iPhone app's **Make photoreal** uploads a room to that server and opens the result. Turn on **Photoreal capture** before scanning for sharper, high-resolution photos.
+
 ## Privacy and licensing
 
 Only the office example is distributed. No other rooms, connected-house layout, original scan bundles, or development Git history are included. Keep your captures private; inspect assets before publishing your own demo.

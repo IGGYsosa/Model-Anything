@@ -51,10 +51,26 @@ final class CoverageEngine: @unchecked Sendable {
     /// RoomPlan's ceiling / floor surfaces that are well photographed (1 if there's no layout yet)
     var ceilingCovered: Float = 1
     var floorCovered: Float = 1
+    /// photoreal rescan areas (setRescan) not yet re-photographed, of `rescanTotal`
+    var rescanLeft = 0
+    var rescanTotal = 0
     /// Photo detail on observed geometry, without penalties for inferred hidden surfaces.
     var percent: Int {
       guard meshArea > 0.5, meshCovered.isFinite else { return 0 }
       return Int((min(1, max(0, meshCovered)) * 100).rounded())
+    }
+  }
+
+  /// An area a photoreal review flagged as weak, as an oriented box in this session's world.
+  /// Vertices inside count only photos from this session (`room >= 0`), not earlier sessions'
+  /// photos, so they show red until they are photographed again.
+  struct RescanBox {
+    var id: Int
+    var worldToBox: simd_float4x4
+    var halfExtents: SIMD3<Float>
+    func contains(_ p: SIMD3<Float>) -> Bool {
+      let q = simd_make_float3(worldToBox * SIMD4(p, 1))
+      return abs(q.x) <= halfExtents.x && abs(q.y) <= halfExtents.y && abs(q.z) <= halfExtents.z
     }
   }
 
@@ -111,6 +127,8 @@ final class CoverageEngine: @unchecked Sendable {
     var area: [Float] = []
     var score: [Float] = []
     var inRoom: [Bool] = []
+    /// index into rescanBoxes per vertex, -1 outside them (empty when there are none)
+    var rescan: [Int16] = []
     var faces: [UInt32] = []
     var classes: [UInt8] = [] // per face
     var center = SIMD3<Float>(repeating: 0)
@@ -125,6 +143,7 @@ final class CoverageEngine: @unchecked Sendable {
   private var photos: [Photo] = []
   private var targets: [Target] = []
   private var targetScore: [Float] = []
+  private var rescanBoxes: [RescanBox] = []
   private var outline: [SIMD2<Float>] = []
   private var floorY: Float = -10
   private var ceilingY: Float = 10
@@ -152,6 +171,21 @@ final class CoverageEngine: @unchecked Sendable {
       publishStats()
     }
     if pendingRooms.finish() { queue.async { self.applyPendingRoom() } }
+  }
+
+  /// Weak areas from a photoreal review (empty clears them). Rescores everything.
+  func setRescan(_ boxes: [RescanBox]) {
+    queue.async {
+      self.rescanBoxes = boxes
+      var changed: [AnchorMesh] = []
+      for a in self.anchors.values {
+        self.markRescan(a)
+        self.rescore(a)
+        changed.append(self.mesh(for: a))
+      }
+      self.emit(changed)
+      self.publishStats()
+    }
   }
 
   /// Mesh anchor added or updated. Copies the geometry immediately (call from any thread).
@@ -348,6 +382,7 @@ final class CoverageEngine: @unchecked Sendable {
     guard Self.mightSee(photo, a) else { return false }
     var changed = false
     for i in a.world.indices where a.score[i] < 2 {
+      if photo.room < 0, rescanIndex(a, i) >= 0 { continue } // earlier photos don't count in rescan areas
       let q = Self.contribution(photo, a.world[i], a.worldNormals[i])
       if q > 0 {
         let before = Self.band(a.score[i])
@@ -360,6 +395,7 @@ final class CoverageEngine: @unchecked Sendable {
 
   private func rescore(_ a: AnchorData, previousWorld: [SIMD3<Float>] = [], previousNormals: [SIMD3<Float>] = [], previousScores: [Float] = []) {
     let relevant = photos.filter { Self.mightSee($0, a) }
+    let live = a.rescan.isEmpty ? [] : relevant.filter { $0.room >= 0 }
     for i in a.world.indices {
       // ARKit often updates only part of an anchor. Exact equality is safe; fuzzy
       // spatial caching could incorrectly carry coverage across an edge or occluder.
@@ -368,8 +404,15 @@ final class CoverageEngine: @unchecked Sendable {
         a.score[i] = previousScores[i]
         continue
       }
-      a.score[i] = Self.coverageScore(relevant, at: a.world[i], normal: a.worldNormals[i])
+      a.score[i] = Self.coverageScore(rescanIndex(a, i) >= 0 ? live : relevant, at: a.world[i], normal: a.worldNormals[i])
     }
+  }
+
+  private func rescanIndex(_ a: AnchorData, _ i: Int) -> Int { i < a.rescan.count ? Int(a.rescan[i]) : -1 }
+
+  private func markRescan(_ a: AnchorData) {
+    guard !rescanBoxes.isEmpty else { a.rescan = []; return }
+    a.rescan = a.world.map { p in Int16(rescanBoxes.firstIndex { $0.contains(p) } ?? -1) }
   }
 
   /// Score RoomPlan's surface samples against every photo that could reach them (photos more
@@ -443,6 +486,7 @@ final class CoverageEngine: @unchecked Sendable {
       }
       a.score = [Float](repeating: 0, count: a.world.count)
       classify(a)
+      markRescan(a)
       rescore(a, previousWorld: previousWorld, previousNormals: previousNormals, previousScores: previousScores)
       changed.append(mesh(for: a))
     }
@@ -606,6 +650,19 @@ final class CoverageEngine: @unchecked Sendable {
         }
       }
       s.meshCovered = s.meshArea > 0 ? covered / s.meshArea : 0
+      // a rescan area is done once 70% of its observed surface is green from this session's photos
+      if !self.rescanBoxes.isEmpty {
+        var area = [Float](repeating: 0, count: self.rescanBoxes.count), good = area
+        for a in self.anchors.values {
+          for i in a.rescan.indices where a.rescan[i] >= 0 {
+            let b = Int(a.rescan[i])
+            area[b] += a.area[i]
+            if a.score[i] >= Self.goodScore { good[b] += a.area[i] }
+          }
+        }
+        s.rescanTotal = self.rescanBoxes.count
+        s.rescanLeft = area.indices.filter { area[$0] == 0 || good[$0] / area[$0] < 0.7 }.count
+      }
       var tArea: Float = 0, tCovered: Float = 0
       var cA: Float = 0, cC: Float = 0, fA: Float = 0, fC: Float = 0
       for (i, t) in self.targets.enumerated() {
