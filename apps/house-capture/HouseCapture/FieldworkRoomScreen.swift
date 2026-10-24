@@ -199,6 +199,15 @@ struct FieldworkRoomScreen: View {
       } else if let job = photoreal, job.state == "done", let url = PhotorealClient.viewerURL(job.id) {
         Button { viewing = url } label: { Label("View photoreal", systemImage: "cube.transparent") }
           .buttonStyle(FieldworkButtonStyle(filled: false))
+        if let active = room?.active, let request = RescanRequest(houseID: houseID, sessionID: active.session, job: job) {
+          Button {
+            RescanRequest.pending = request
+            onCapture(houseID, room?.zone, nil, roomID)
+          } label: { Label("Rescan \(request.areas.count) weak spot\(request.areas.count == 1 ? "" : "s")", systemImage: "camera.viewfinder") }
+            .buttonStyle(FieldworkButtonStyle(filled: false)).disabled(!CaptureController.isSupported || busy)
+          Text("The phone shows these areas in red while you scan; photograph them until they turn green, then make photoreal again.")
+            .font(.caption).foregroundStyle(Fieldwork.secondary)
+        }
         if let quality = job.metrics?.quality {
           Text("Quality: \(quality)").font(.caption).foregroundStyle(Fieldwork.secondary)
         }

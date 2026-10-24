@@ -237,7 +237,8 @@ def run(source, job_dir, room=None, preset='interior', steps=30_000, factor=1, s
             'worldToRoom': metadata['worldToRoom'],
         }
         (scene / 'scene.json').write_text(json.dumps(package, indent=1))
-        job.update(state='done', step=None, metrics=metrics, hints=hints, scene='scene/scene.json', finishedAt=now())
+        job.update(state='done', step=None, metrics=metrics, hints=hints, worldToRoom=metadata['worldToRoom'],
+                   scene='scene/scene.json', finishedAt=now())
         return job.data
     except Exception as error:
         job.update(state='failed', error=f'{type(error).__name__}: {error}', trace=traceback.format_exc()[-4000:])

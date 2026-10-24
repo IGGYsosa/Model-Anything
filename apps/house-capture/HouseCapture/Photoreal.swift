@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import simd
 import SwiftUI
 import WebKit
 
@@ -50,7 +51,14 @@ enum PhotorealSettings {
 
 /// job.json as the server reports it (GET /jobs/{id})
 struct PhotorealJob: Decodable, Equatable {
-  struct Hint: Decodable, Equatable { let text: String }
+  /// a weak area (apps/pipeline/review.py): box in the scanned session's room coordinates
+  struct Hint: Decodable, Equatable {
+    let text: String
+    let id: Int?
+    let reason: String?
+    let min: [Float]?
+    let max: [Float]?
+  }
   struct Metrics: Decodable, Equatable { let psnr: Double?; let quality: String? }
   let id: String
   let state: String
@@ -58,6 +66,8 @@ struct PhotorealJob: Decodable, Equatable {
   let error: String?
   let hints: [Hint]?
   let metrics: Metrics?
+  /// the scanned session's ARKit world → room, column-major (for rescan boxes)
+  let worldToRoom: [Float]?
 
   var finished: Bool { state == "done" || state == "failed" }
   var statusText: String {
@@ -67,6 +77,43 @@ struct PhotorealJob: Decodable, Equatable {
     case (_, "qc"?): "Checking quality…"
     case (_, "package"?): "Packaging the scene…"
     default: "Preparing photos and LiDAR…"
+    }
+  }
+}
+
+/// Weak areas the room screen hands to the next capture ("Rescan weak spots"). Passed through
+/// `pending` because a capture starts from several screens with the same entry point.
+struct RescanRequest {
+  var houseID: String
+  /// the session the photoreal job was made from
+  var sessionID: String
+  var worldToRoom: simd_float4x4
+  var areas: [(id: Int, min: SIMD3<Float>, max: SIMD3<Float>)]
+  @MainActor static var pending: RescanRequest?
+
+  init?(houseID: String, sessionID: String, job: PhotorealJob) {
+    guard let m = job.worldToRoom, m.count == 16 else { return nil }
+    let areas = (job.hints ?? []).compactMap { h -> (id: Int, min: SIMD3<Float>, max: SIMD3<Float>)? in
+      guard let id = h.id, let lo = h.min, let hi = h.max, lo.count == 3, hi.count == 3 else { return nil }
+      return (id, SIMD3(lo[0], lo[1], lo[2]), SIMD3(hi[0], hi[1], hi[2]))
+    }
+    guard !areas.isEmpty else { return nil }
+    self.houseID = houseID
+    self.sessionID = sessionID
+    worldToRoom = simd_float4x4(columnMajor: m)
+    self.areas = areas
+  }
+
+  /// The areas as boxes in `zone`'s frame, which is a relocalized live session's world:
+  /// room → scanned session's world (inverse worldToRoom) → zone (its toZone). Nil when that
+  /// session isn't placed in the zone, so the boxes can't be located.
+  func boxes(in house: HouseProject, zone: String) -> [CoverageEngine.RescanBox]? {
+    guard let session = house.session(sessionID), session.zone == zone, session.alignment.method != "unaligned" else { return nil }
+    let zoneToRoom = worldToRoom * simd_float4x4(columnMajor: session.alignment.toZone).inverse
+    return areas.map { area in
+      var toCenter = matrix_identity_float4x4
+      toCenter.columns.3 = SIMD4(-(area.min + area.max) / 2, 1)
+      return CoverageEngine.RescanBox(id: area.id, worldToBox: toCenter * zoneToRoom, halfExtents: (area.max - area.min) / 2)
     }
   }
 }

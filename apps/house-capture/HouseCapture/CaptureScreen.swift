@@ -120,6 +120,15 @@ struct CaptureScreen: View {
             }
             Text("\(controller.rooms.count) room\(controller.rooms.count == 1 ? "" : "s") · \(controller.photoCount) photos")
               .font(.caption.monospacedDigit())
+            if controller.stats.rescanTotal > 0 {
+              Text(controller.stats.rescanLeft == 0 ? "Weak spots rephotographed"
+                   : "\(controller.stats.rescanLeft) of \(controller.stats.rescanTotal) weak spots left")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(controller.stats.rescanLeft == 0 ? Color.green : Color.orange)
+            } else if controller.rescanWaiting {
+              Text("Weak spots show once the phone recognizes the room")
+                .font(.caption2).foregroundStyle(.secondary)
+            }
             if controller.phase != .relocalizing {
               HStack(spacing: 6) {
                 AlignmentBadge(alignment: controller.alignment)

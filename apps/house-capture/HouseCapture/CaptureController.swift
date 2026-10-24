@@ -292,8 +292,16 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
       try? bundle.delete()
       throw error
     }
-    return CaptureController(house: house, plan: plan, bundle: bundle, alignment: alignment)
+    let controller = CaptureController(house: house, plan: plan, bundle: bundle, alignment: alignment)
+    if let request = RescanRequest.pending, request.houseID == houseID { controller.rescan = request }
+    RescanRequest.pending = nil
+    return controller
   }
+
+  /// photoreal weak areas to show red once relocalized ("Rescan weak spots" on the room screen)
+  private var rescan: RescanRequest?
+  /// asked for, but not shown yet (the phone hasn't recognized the room, or can't place them)
+  var rescanWaiting: Bool { rescan != nil && stats.rescanTotal == 0 }
 
   private var roomIndex: Int { rooms.count } // the room being scanned
 
@@ -623,6 +631,11 @@ final class CaptureController: NSObject, ObservableObject, RoomCaptureSessionDel
     priorPhotoCount = photos.count
     engine.add(contentsOf: photos)
     diagnostics.log("coverage: \(photos.count) earlier photos", since: startedAt)
+    if let rescan, let boxes = rescan.boxes(in: house, zone: plan.zoneID) {
+      engine.setRescan(boxes)
+      diagnostics.log("rescan: \(boxes.count) weak areas from session \(rescan.sessionID)", since: startedAt)
+      show(notice: "\(boxes.count) weak spot\(boxes.count == 1 ? " is" : "s are") marked red. Photograph \(boxes.count == 1 ? "it" : "them") until \(boxes.count == 1 ? "it turns" : "they turn") green.")
+    }
   }
 
   private func saveAlignment() {

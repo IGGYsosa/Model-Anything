@@ -115,6 +115,8 @@ class JobTests(unittest.TestCase):
         self.assertEqual(len(weak), review['weakPointCount'] * 16)
         # the job carries the areas for the phone; scene.json carries their text
         self.assertEqual([h['id'] for h in data['hints']], [a['id'] for a in review['areas']])
+        self.assertEqual(data['worldToRoom'], scene['worldToRoom'])
+        self.assertEqual(data['hints'][0]['min'], review['areas'][0]['min'])
         self.assertEqual(scene['hints'], [a['text'] for a in review['areas']])
 
     def test_exterior_preset_refines_poses(self):
