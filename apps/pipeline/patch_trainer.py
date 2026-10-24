@@ -5,6 +5,10 @@
 2. examples/lib_bilagrid.py color_correct(): asserts when its least-squares color fit has no
    solution, which happens for a held-out photo that is nearly one color (a blank wall). That
    aborts the run at evaluation after training finished; leave such an image uncorrected.
+3. examples/simple_trainer.py depth loss: torch.where(depths > 0, 1 / depths, 0) still evaluates
+   1/0 where a LiDAR point has nothing rendered yet; the forward pass hides it, but the backward
+   pass turns 0 * inf into NaN and the run diverges within ~100 steps (seen on a real room scan).
+   Clamp before dividing.
 
 usage: python patch_trainer.py <gsplat>/examples   (with the trainer's Python)
 setup_native.ps1 and the Dockerfile run it.
@@ -33,3 +37,6 @@ patch(Path(sys.argv[1]) / 'lib_bilagrid.py', [
     ('            assert torch.all(torch.isfinite(w))\n',
      '            if not torch.all(torch.isfinite(w)):\n'
      '                return img  # no color fit (e.g. a nearly uniform photo): leave it uncorrected\n')])
+patch(Path(sys.argv[1]) / 'simple_trainer.py', [
+    ('disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))',
+     'disp = torch.where(depths > 0.0, 1.0 / depths.clamp_min(1e-6), torch.zeros_like(depths))')])
